@@ -93,6 +93,26 @@
 .sample-graph-node button { text-align: left; font-size: 12px; font-weight: 600; padding: 0; background: none; border: 0; color: var(--text-primary); cursor: pointer; }
 .sample-graph-node small { color: var(--text-secondary); }
 .sample-graph-node .react-flow__handle { opacity: 0; pointer-events: none; }
+.sample-execution-node .react-flow__handle { top: 21px; }
+.sample-execution-edge { --execution-edge-color: var(--border-control); }
+.sample-execution-edge.is-success, .sample-execution-edge.is-running { --execution-edge-color: var(--success); }
+.sample-execution-edge.is-failed { --execution-edge-color: var(--danger); }
+.sample-execution-edge .sample-execution-edge-line,
+.sample-execution-edge-flow { stroke: var(--execution-edge-color); stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.sample-execution-edge .sample-execution-edge-line { stroke-width: 1.5; stroke-opacity: .5; }
+.sample-execution-edge.is-pending .sample-execution-edge-line { stroke-dasharray: 3 5; stroke-opacity: .7; }
+.sample-execution-edge.is-failed .sample-execution-edge-line { stroke-opacity: .65; }
+.sample-execution-edge-flow { stroke-width: 1.8; stroke-dasharray: 7 25; stroke-opacity: .9; animation: sample-edge-flow 2.4s linear infinite; }
+.sample-execution-edge.is-running .sample-execution-edge-flow { animation-duration: 1.6s; }
+.sample-execution-edge.is-highlighted .sample-execution-edge-line { stroke-width: 2.25; stroke-opacity: .85; }
+.sample-execution-edge.is-highlighted .sample-execution-edge-flow { stroke-width: 2.25; }
+.sample-graph-host[hidden] .sample-execution-edge-flow { animation-play-state: paused; }
+@keyframes sample-edge-flow { to { stroke-dashoffset: -32; } }
+@media (prefers-reduced-motion: reduce) {
+  .sample-execution-edge-flow { display: none; animation: none !important; }
+  .sample-execution-edge.is-success .sample-execution-edge-line,
+  .sample-execution-edge.is-running .sample-execution-edge-line { stroke-opacity: .85; }
+}
 .sample-details { display: flex; flex-direction: column; flex: none; width: clamp(310px, 28vw, 430px); min-height: 0; border-left: 1px solid var(--border-subtle); background: var(--surface); outline: none; }
 .sample-details.is-expanded { position: absolute; inset: 0 0 0 auto; z-index: 15; width: min(850px, 100%); box-shadow: -12px 0 36px #20252b15; }
 .sample-details > header { display: flex; align-items: center; gap: 4px; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); }

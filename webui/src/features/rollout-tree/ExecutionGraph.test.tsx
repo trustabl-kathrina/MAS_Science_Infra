@@ -28,3 +28,27 @@ it('updates node content without recreating positions or fitting the viewport ag
   expect(after.onInit).toBeUndefined();
   expect(after.onNodesChange).toBeUndefined();
 });
+
+it('keeps edge objects stable across content-only updates and distinguishes execution states', () => {
+  const nodes = [
+    { node_id: 'q', kind: 'query' },
+    { node_id: 'ok', kind: 'execution', status: 'succeeded' },
+    { node_id: 'active', kind: 'execution', status: 'running' },
+    { node_id: 'failed', kind: 'execution', status: 'failed' },
+    { node_id: 'unknown', kind: 'execution', status: 'succeeded', terminal_unconfirmed: true },
+  ] as TreeNode[];
+  const edges = nodes.slice(1).map(node => ({
+    source_node_id: 'q', target_node_id: node.node_id, kind: 'sequence' as const,
+  }));
+  const onSelect = vi.fn();
+  const { rerender } = render(<ExecutionGraph nodes={nodes} edges={edges} outcomes={{}} onSelect={onSelect} />);
+  const before = flow.mock.lastCall![0];
+  expect(before.edges.map((edge: { type: string; data: { tone: string } }) => [edge.type, edge.data.tone]))
+    .toEqual([['execution', 'success'], ['execution', 'running'], ['execution', 'failed'], ['execution', 'pending']]);
+  rerender(<ExecutionGraph nodes={nodes.map(node => ({ ...node, summary: 'updated text' }))}
+    edges={edges.map(edge => ({ ...edge }))} outcomes={{ result: { reward: 0 } }} onSelect={onSelect} />);
+  const after = flow.mock.lastCall![0];
+  expect(after.edges).toBe(before.edges);
+  expect(after.edgeTypes).toBe(before.edgeTypes);
+  expect(after.onNodeClick).toBe(before.onNodeClick);
+});
