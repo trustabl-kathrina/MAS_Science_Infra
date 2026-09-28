@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -19,31 +20,8 @@ from workflow.active_set import load_local_expansion, resume_boundary_from_messa
 from workflow.archive import load_resume_messages
 from workflow.llm_diagnostics import log_model_route
 from rl.hooks.rae_advantage import adjudicate_action_group, apply_dead_end_backprop_verdicts
-
-
-def _persist_rollout_tree(tree_id: str, tree: Dict[str, Any]) -> None:
-    """Persist one RolloutTree to mas/.local_expansion/ so the WebUI
-    /api/mas/rollout-trees endpoint (which scans that dir) can serve it.
-
-    Written next to dump_local_expansion()'s expansion payloads; filename
-    is prefixed with "tree_" to distinguish UI trees from expansion plans.
-    Failures are swallowed: persistence must never break training.
-    """
-    import json as _json
-    import os as _os
-
-    try:
-        from workflow.active_set import EXPANSION_DIR
-    except Exception:
-        return
-    try:
-        root = _os.environ.get("TIR_LOCAL_EXPANSION_DIR") or EXPANSION_DIR
-        _os.makedirs(root, exist_ok=True)
-        dest = _os.path.join(root, f"tree_{tree_id}.json")
-        with open(dest, "w", encoding="utf-8") as f:
-            f.write(_json.dumps({"tree_id": tree_id, **tree}, ensure_ascii=False))
-    except Exception:
-        pass
+from rl.hooks.rollout_tree import RolloutTreeRecorder
+from workflow.rollout_tree import identify_plans
 
 
 def emit_rollout_tree_event(event: Dict[str, Any]) -> None:
@@ -88,7 +66,10 @@ def extract_tir_meta_from_spans(spans: List[Any]) -> Dict[str, Any]:
 class TirAgentModeDaemon(AgentModeDaemon):
     """Extends AgentModeDaemon with tir_meta on the batch and optional tree enqueue."""
 
-    def __init__(self, *args: Any, tir_algo: str = "grpo", tir_config: Optional[Dict[str, Any]] = None, **kwargs: Any):
+    _tree_recorder: Optional[RolloutTreeRecorder] = None
+
+    def __init__(self, *args: Any, tir_algo: str = "grpo", tir_config: Optional[Dict[str, Any]] = None,
+                 tree_context: Optional[Dict[str, str]] = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.tir_algo = (tir_algo or "grpo").lower()
         self.tir_config = tir_config or {}
@@ -99,7 +80,9 @@ class TirAgentModeDaemon(AgentModeDaemon):
         self._branch_local_count_total = 0
         self._enqueued_expansion_parents: set = set()
         self._incremental_branch_total = 0
-        self._rollout_trees: Dict[str, Any] = {}  # data_id -> RolloutTree dict (P0 bypass write)
+        self._tree_recorder = RolloutTreeRecorder(tree_context) if self.mode == "v1" else None
+        if self.mode != "v1" and tree_context:
+            logging.getLogger(__name__).warning("RolloutTree recording requires Store v1; mode=%s", self.mode)
 
     def _expand_in_runner(self) -> bool:
         return bool(self.tir_config.get("expand_in_runner", True))
@@ -108,7 +91,12 @@ class TirAgentModeDaemon(AgentModeDaemon):
         return bool(self.tir_config.get("ready_batch", False))
 
     async def _validate_data_v1(self, rollout: Rollout) -> RolloutLegacy:
-        spans = await self.store.query_spans(rollout.rollout_id, attempt_id="latest")
+        attempt = getattr(rollout, "attempt", None)
+        if attempt is None:
+            attempt = await self.store.get_latest_attempt(rollout.rollout_id)
+        spans = await self.store.query_spans(
+            rollout.rollout_id, attempt_id=attempt.attempt_id if attempt else "latest"
+        )
         # --- debug probe: dump spans/triplets for empty-triplet diagnosis ---
         import json as _json
         import os as _os
@@ -149,7 +137,15 @@ class TirAgentModeDaemon(AgentModeDaemon):
         if not spans:
             triplets = []
         else:
-            triplets = self.adapter.adapt(spans)
+            try:
+                triplets = self.adapter.adapt(spans)
+            except (ValueError, TypeError, RuntimeError):
+                if self._tree_recorder:
+                    self._tree_recorder.completed(
+                        rollout, self._task_id_to_original_sample[rollout.rollout_id],
+                        spans, None, "rejected", attempt,
+                    )
+                raise
         tir_meta = extract_tir_meta_from_spans(spans)
         self._rollout_meta[rollout.rollout_id] = tir_meta
         try:
@@ -172,7 +168,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
             metadata=rollout.metadata or {},
         )
         merged_meta = dict(rollout.metadata or {})
-        merged_meta["tir"] = tir_meta
+        if self.tir_algo != "grpo":
+            merged_meta["tir"] = tir_meta
         result_rollout = RolloutLegacy(
             rollout_id=rollout.rollout_id,
             task=task,
@@ -181,6 +178,11 @@ class TirAgentModeDaemon(AgentModeDaemon):
             metadata=merged_meta,
         )
         self._validate_data(result_rollout)
+        if self._tree_recorder:
+            self._tree_recorder.completed(
+                rollout, self._task_id_to_original_sample[rollout.rollout_id],
+                spans, final_reward, "adapted" if triplets else "empty", attempt,
+            )
         if (
             self.is_train
             and self.tir_algo in ("arpo", "aepo", "rae")
@@ -228,6 +230,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
             did = str(sample.get("data_id", ""))
             if did:
                 self._pending_original_by_data_id[did] = sample
+        if self._tree_recorder:
+            self._tree_recorder.initial(self._task_id_to_original_sample, "train" if is_train else "val")
 
         if is_train and self.tir_algo in ("arpo", "aepo", "rae") and self._expand_in_runner():
             self._stamp_expand_budgets()
@@ -311,7 +315,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
         if parent_rid in self._enqueued_expansion_parents:
             return 0
         expansion = load_local_expansion(parent_rid) or {}
-        plans = list(expansion.get("plans") or [])
+        plans = identify_plans(parent_rid, list(expansion.get("plans") or []))
         if not plans:
             return 0
         sample_parent = self._task_id_to_original_sample.get(parent_rid) or {}
@@ -321,6 +325,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
         n_target = int(getattr(self, "_full_group_n", None) or self.train_rollout_n)
         existing = [rid for rid, s in self._task_id_to_original_sample.items() if str(s.get("data_id")) == data_id]
         remaining = max(0, n_target - len(existing))
+        if self._tree_recorder:
+            self._tree_recorder.plans(sample_parent, parent_rid, plans, remaining)
         if remaining <= 0:
             self._enqueued_expansion_parents.add(parent_rid)
             return 0
@@ -339,6 +345,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
             if not messages:
                 continue
             sample = dict(original)
+            sample["plan_id"] = plan["plan_id"]
             sample["resume_messages"] = messages
             sample["resume_parent_id"] = str(plan.get("parent_id") or parent_rid)
             sample["is_branch"] = True
@@ -371,7 +378,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
                         unresponsive_seconds=llm_timeout,
                         timeout_seconds=llm_timeout,
                     ),
-                    metadata={"data_id": data_id, "is_train": True, "tir_branch": True},
+                    metadata={"data_id": data_id, "is_train": True, "tir_branch": True,
+                              "plan_id": plan["plan_id"]},
                 )
             )
             remaining -= 1
@@ -386,50 +394,36 @@ class TirAgentModeDaemon(AgentModeDaemon):
             self._task_id_to_original_sample[rollout.rollout_id] = packed
         self._total_tasks_queued += len(rollouts)
         self._enqueued_expansion_parents.add(parent_rid)
-        # Incremental path: persist tree + emit node_added (same as the batch
-        # path in _enqueue_from_runner_expansions) so the RolloutTree UI panel
-        # updates live under ready_batch=True, which routes here.
-        tree = dict(expansion.get("tree") or {}) or None
-        if tree is not None:
-            branch_rollouts = [r for r, s in zip(rollouts, samples_for_requests) if s.get("is_branch")]
-            child_nodes = [n for n in (tree.get("nodes") or []) if n.get("role") != "root"]
-            for node, rollout in zip(child_nodes, branch_rollouts):
-                node["node_id"] = str(rollout.rollout_id)
-            tree_id = str(tree.get("tree_id") or parent_rid)
-            existing = self._rollout_trees.get(tree_id)
-            if existing:
-                seen = {n.get("node_id") for n in (existing.get("nodes") or [])}
-                new_nodes = [n for n in tree.get("nodes") or [] if n.get("node_id") not in seen]
-                existing.setdefault("nodes", []).extend(new_nodes)
-            else:
-                self._rollout_trees[tree_id] = tree
-            _persist_rollout_tree(tree_id, self._rollout_trees[tree_id])
-            emit_rollout_tree_event(
-                {
-                    "event": "node_added",
-                    "tree_id": tree_id,
-                    "node_id": None,
-                    "payload": {
-                        "n_nodes": len(self._rollout_trees[tree_id].get("nodes") or []),
-                        "n_new": len(child_nodes),
-                    },
-                }
-            )
+        if self._tree_recorder:
+            self._tree_recorder.submitted(rollouts, samples_for_requests)
         return len(rollouts)
 
     async def _async_run_until_finished(self, verbose: bool = True):
-        await super()._async_run_until_finished(verbose=verbose)
-        if not self.is_train or self.tir_algo not in ("arpo", "aepo", "rae"):
-            return
-        if self._expand_in_runner():
-            extra = await self._enqueue_from_runner_expansions()
+        if self._tree_recorder and self.mode == "v1":
+            async with self._tree_recorder.watching(
+                self.store, self._task_id_to_original_sample, "train" if self.is_train else "val"
+            ):
+                await self._wait_for_training_rollouts(verbose)
         else:
-            extra = await self._enqueue_tree_branches_legacy()
-        if extra <= 0:
-            return
-        if verbose:
-            print(f"[TIR {self.tir_algo}] enqueued {extra} branch/resume rollouts; waiting...")
-        await super()._async_run_until_finished(verbose=verbose)
+            await self._wait_for_training_rollouts(verbose)
+
+    async def _wait_for_training_rollouts(self, verbose: bool = True):
+        try:
+            await super()._async_run_until_finished(verbose=verbose)
+            if not self.is_train or self.tir_algo not in ("arpo", "aepo", "rae"):
+                return
+            if self._expand_in_runner():
+                extra = await self._enqueue_from_runner_expansions()
+            else:
+                extra = await self._enqueue_tree_branches_legacy()
+            if extra <= 0:
+                return
+            if verbose:
+                print(f"[TIR {self.tir_algo}] enqueued {extra} branch/resume rollouts; waiting...")
+            await super()._async_run_until_finished(verbose=verbose)
+        finally:
+            if self._tree_recorder:
+                self._tree_recorder.flush()
 
     async def _enqueue_from_runner_expansions(self) -> int:
         """Materialize ActiveSetSession plans + global fill to reach group_n.
@@ -449,8 +443,6 @@ class TirAgentModeDaemon(AgentModeDaemon):
 
         for data_id, rids in by_data.items():
             remaining = max(0, n_target - len(rids))
-            if remaining <= 0:
-                continue
             original = dict(
                 self._pending_original_by_data_id.get(data_id) or self._task_id_to_original_sample[rids[0]]
             )
@@ -473,17 +465,19 @@ class TirAgentModeDaemon(AgentModeDaemon):
                         "data_id": data_id,
                         "is_train": True,
                         "tir_branch": bool(is_branch),
+                        "plan_id": sample.get("plan_id"),
                     },
                 )
 
             for rid in rids:
-                if remaining <= 0:
-                    break
                 if rid in self._enqueued_expansion_parents:
                     continue
                 expansion = load_local_expansion(rid) or {}
-                plans = list(expansion.get("plans") or [])
-                tree = dict(expansion.get("tree") or {}) or None  # P0: bypass tree
+                plans = identify_plans(rid, list(expansion.get("plans") or []))
+                if self._tree_recorder and plans:
+                    self._tree_recorder.plans(self._task_id_to_original_sample[rid], rid, plans, remaining)
+                if remaining <= 0:
+                    continue
                 meta = self._rollout_meta.get(rid) or {}
                 try:
                     self._branch_local_count_total += int(
@@ -498,6 +492,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
                     if not messages:
                         continue
                     sample = dict(original)
+                    sample["plan_id"] = plan["plan_id"]
                     sample["resume_messages"] = messages
                     sample["resume_parent_id"] = str(plan.get("parent_id") or rid)
                     sample["is_branch"] = True
@@ -539,6 +534,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
 
             for _ in range(remaining):
                 sample = dict(original)
+                sample.pop("plan_id", None)
                 sample.pop("resume_messages", None)
                 sample.pop("resume_parent_id", None)
                 sample.pop("resume_from", None)
@@ -558,35 +554,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
             self._task_id_to_original_sample[rollout.rollout_id] = packed
         self._total_tasks_queued += len(rollouts)
 
-        # P0 bypass write: rewrite synthetic tree node ids with real store rollout ids.
-        if tree is not None:
-            branch_rollouts = [r for r, s in zip(rollouts, samples_for_requests) if s.get("is_branch")]
-            child_nodes = [n for n in (tree.get("nodes") or []) if n.get("role") != "root"]
-            for node, rollout in zip(child_nodes, branch_rollouts):
-                node["node_id"] = str(rollout.rollout_id)
-            tree_id = str(tree.get("tree_id") or "")
-            if tree_id:
-                existing = self._rollout_trees.get(tree_id)
-                if existing:
-                    seen = {n.get("node_id") for n in (existing.get("nodes") or [])}
-                    new_nodes = [n for n in tree.get("nodes") or [] if n.get("node_id") not in seen]
-                    existing.setdefault("nodes", []).extend(new_nodes)
-                else:
-                    self._rollout_trees[tree_id] = tree
-                _persist_rollout_tree(tree_id, self._rollout_trees[tree_id])
-                emit_rollout_tree_event(
-                    {
-                        "event": "node_added",
-                        "tree_id": tree_id,
-                        "node_id": None,
-                        "payload": {
-                            "n_nodes": len(self._rollout_trees[tree_id].get("nodes") or []),
-                            "n_new": len(
-                                [n for n in (tree.get("nodes") or []) if n.get("role") != "root"]
-                            ),
-                        },
-                    }
-                )
+        if self._tree_recorder:
+            self._tree_recorder.submitted(rollouts, samples_for_requests)
         return len(rollouts)
 
     async def _enqueue_tree_branches_legacy(self) -> int:
@@ -690,6 +659,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
             packed["data_id"] = did
             self._task_id_to_original_sample[rollout.rollout_id] = packed
         self._total_tasks_queued += len(rollouts)
+        if self._tree_recorder:
+            self._tree_recorder.submitted(rollouts, samples_for_requests)
         return len(rollouts)
 
     # Back-compat alias for callers / tests that still patch this name.
@@ -705,6 +676,13 @@ class TirAgentModeDaemon(AgentModeDaemon):
             device=device,
             global_steps=global_steps,
         )
+        if self.tir_algo == "grpo":
+            if self._tree_recorder:
+                ids = [str(rid) for rid in data_proto.non_tensor_batch.get("rollout_id_list", [])]
+                self._tree_recorder.batch_judgments(
+                    ids, self._task_id_to_original_sample, [{} for _ in ids], global_steps
+                )
+            return data_proto, data_metrics
 
         def _as_list(key: str) -> List[Any]:
             raw = data_proto.non_tensor_batch.get(key, None)
@@ -826,6 +804,15 @@ class TirAgentModeDaemon(AgentModeDaemon):
             data_proto.non_tensor_batch["verdict_list"] = np.array(verdicts, dtype=object)
             data_proto.non_tensor_batch["resume_boundary"] = np.array(bounds, dtype=object)
             data_proto.non_tensor_batch["action_key_list"] = np.array(action_keys, dtype=object)
+            if self._tree_recorder:
+                self._tree_recorder.batch_judgments(
+                    rollout_ids, self._task_id_to_original_sample, [
+                        {"action_key": action_keys[i], "site_id": site_ids[i],
+                         "window_id": (self._task_id_to_original_sample.get(str(rid)) or {}).get("window_id"),
+                         "scheme": schemes[i], "verdict": verdicts[i]}
+                        for i, rid in enumerate(rollout_ids)
+                    ], global_steps,
+                )
         algo_id = {"grpo": 0.0, "arpo": 1.0, "aepo": 2.0, "igpo": 3.0, "gigpo": 4.0, "rae": 5.0}
         data_metrics["training/tir_algo"] = algo_id.get(self.tir_algo, 0.0)
         data_metrics["training/n_with_anchor"] = float(sum(1 for a in anchors if a))
@@ -849,6 +836,8 @@ class TirAgentModeDaemon(AgentModeDaemon):
         return data_proto, data_metrics
 
     def clear_data_and_server(self):
+        if self._tree_recorder:
+            self._tree_recorder.release_batch()
         super().clear_data_and_server()
         self._pending_original_by_data_id.clear()
         self._rollout_meta.clear()

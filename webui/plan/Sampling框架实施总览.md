@@ -161,7 +161,8 @@ class SamplingStrategyAdapter:
 完成 S0–S2 和 ARPO 服务器验收后，后续顺序为：
 
 1. 选择并实现下一个算法 Adapter；每个 Adapter 单独声明所需 Window、Gate、预算和训练信号。
-2. [按 run 存储 Rollout Tree](RolloutTree第一阶段-按run存储与结果回填.md)。
-3. [Rollout Tree 节点详情与实时更新](RolloutTree第二阶段-节点详情与实时更新.md)。
+2. [RolloutTree 第一阶段：树结构与运行归档](RolloutTree第一阶段-树结构与运行归档.md)。
+3. [RolloutTree 第二阶段：结果回填与按运行读取](RolloutTree第二阶段-结果回填与按运行读取.md)。
+4. [RolloutTree 第三阶段：树视图与持续更新](RolloutTree第三阶段-树视图与持续更新.md)。整体边界见 [RolloutTree 实施总览](RolloutTree实施总览.md)。
 
 其他算法与 Rollout Tree 不作为本轮三个阶段的完成前置条件。

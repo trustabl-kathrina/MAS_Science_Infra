@@ -193,7 +193,12 @@ def train(config: Dict[str, Any], n_runners: int, active_agents: list[str]) -> N
     print(f"TENSORBOARD_DIR={os.environ['TENSORBOARD_DIR']}")
 
     if tir_algo == "grpo":
-        algorithm = agl.VERL(config)
+        if os.environ.get("TIR_ROLLOUT_TREE_DIR"):
+            from rl.hooks.trainer import bound_daemon_cls
+
+            algorithm = agl.VERL(config, daemon_cls=bound_daemon_cls(tir_algo, tir_cfg))
+        else:
+            algorithm = agl.VERL(config)
     else:
         from rl.hooks.trainer import TirAgentLightningTrainer, bound_daemon_cls
 

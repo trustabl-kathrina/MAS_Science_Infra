@@ -12,5 +12,6 @@
 @import "./integrations/sampling-settings.css";
 @import "./integrations/experiment-workspace.css";
 @import "./integrations/training-parameters.css";
+@import "./integrations/sample-results.css";
 
 @source "../";

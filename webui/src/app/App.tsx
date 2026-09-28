@@ -13,7 +13,7 @@ import { NavigationGuardProvider } from './providers/NavigationGuard';
 import { PageBoundary } from './layout/PageBoundary';
 import { ExperimentHome } from '../pages/ExperimentHome';
 import { useHashNavigation } from './useHashNavigation';
-import { workspaceRoute, type PanelId, type ResourceCategory } from './navigation';
+import { workspaceRoute, type PanelId, type ResourceCategory, type SampleSelection } from './navigation';
 import type { SettingsSection } from '../features/settings/model/sections';
 import { isTrainingSection } from '../features/settings/model/sections';
 import type { ModelResource } from '../features/resources/api';
@@ -23,7 +23,7 @@ import { FeedbackProvider } from '../shared/feedback/FeedbackProvider';
 const WorkspacePanels = lazy(() => import('./layout/WorkspacePanels').then(module => ({ default: module.WorkspacePanels })));
 const Resources = lazy(() => import('../pages/Resources').then(module => ({ default: module.Resources })));
 
-const Workspace = memo(function Workspace({ expId, tab, visible, meta, setExpId, onWorkspace, onHome, onChangePanel, settings, onResources, onSettings, selectedResource, resourcePurpose, consoleRun, trainingConsole, onViewTraining }: {
+const Workspace = memo(function Workspace({ expId, tab, visible, meta, setExpId, onWorkspace, onHome, onChangePanel, settings, onResources, onSettings, selectedResource, resourcePurpose, consoleRun, trainingConsole, onViewTraining, samples, onSamples }: {
   expId: string; tab: PanelId; visible: boolean; meta: MetaResponse | null; setExpId: (id: string) => void;
   onWorkspace: () => void; onHome: () => void; onChangePanel: (id: PanelId) => void;
   settings?: SettingsSection; onResources: (category: ResourceCategory) => void;
@@ -33,6 +33,8 @@ const Workspace = memo(function Workspace({ expId, tab, visible, meta, setExpId,
   consoleRun?: string;
   trainingConsole?: boolean;
   onViewTraining: (runId?: string) => void;
+  samples?: SampleSelection;
+  onSamples: (selection: SampleSelection) => void;
 }) {
   const load = useCallback(async (signal: AbortSignal) => {
     // Legacy bundle reads ensure missing experiments; deep links must never create one.
@@ -55,12 +57,13 @@ const Workspace = memo(function Workspace({ expId, tab, visible, meta, setExpId,
   return <RuntimeProvider expId={expId} onReload={refresh} active={visible} onViewTraining={onViewTraining} onConfigure={onSettings}>
     <TrainingConfigProvider bundle={bundle} onReload={refresh} active={visible}>
       <WorkspaceHeader bundle={bundle} onReload={refresh} onHome={onHome}
-        active={tab} settings={settings} onChangePanel={onChangePanel} onResources={onResources} />
+        active={tab} settings={settings} onChangePanel={onChangePanel} onResources={onResources} readOnlyRun={!!samples} />
       {error && <div className="runtime-error"><InlineNotice tone="warning">实验刷新失败，草稿保持不变：{error}</InlineNotice></div>}
       <PageBoundary><Suspense fallback={<LoadingState label="加载实验工作区…" />}>
         <WorkspacePanels active={tab} visible={visible} bundle={bundle} meta={meta} onReload={refresh} setExpId={setExpId} onWorkspace={onWorkspace}
           settings={settings} onResources={onResources} onSettings={onSettings} selectedResource={selectedResource}
-          resourcePurpose={resourcePurpose} consoleRun={consoleRun} trainingConsole={trainingConsole} />
+          resourcePurpose={resourcePurpose} consoleRun={consoleRun} trainingConsole={trainingConsole}
+          samples={samples} onSamples={onSamples} onChangePanel={onChangePanel} />
       </Suspense></PageBoundary>
     </TrainingConfigProvider>
   </RuntimeProvider>;
@@ -77,8 +80,12 @@ function Application() {
   }, [expId, navigate]);
   const returnToWorkspace = useCallback(() => changePanel('mas'), [changePanel]);
   const viewTraining = useCallback((runId?: string) => {
-    if (expId) void navigate({ ...workspaceRoute(expId, workspace?.panel, workspace?.settings), console: 'training', runId });
-  }, [expId, workspace?.panel, workspace?.settings, navigate]);
+    if (expId) void navigate({ ...workspaceRoute(expId, workspace?.panel, workspace?.settings),
+      samples: workspace?.samples, console: 'training', runId });
+  }, [expId, workspace?.panel, workspace?.settings, workspace?.samples, navigate]);
+  const viewSamples = useCallback((selection: SampleSelection) => {
+    if (expId) void navigate({ ...workspaceRoute(expId, 'records'), samples: selection });
+  }, [expId, navigate]);
   const browseResources = useCallback((category: ResourceCategory, experimentId?: string) => {
     void navigate({ kind: 'resources', category, experimentId });
   }, [navigate]);
@@ -97,7 +104,10 @@ function Application() {
   }, [workspace, navigate]);
   const meta = usePollingResource('meta', experimentApi.meta, undefined, visible);
   const content = useRef<HTMLElement>(null);
-  useEffect(() => { content.current?.focus({ preventScroll: true }); }, [route]);
+  const pageIdentity = route.kind === 'workspace'
+    ? `${route.experimentId}:${route.samples ? `samples:${route.samples.runId}` : `${route.panel}:${route.settings || ''}`}`
+    : route.kind === 'resources' ? `resources:${route.category}` : route.kind;
+  useEffect(() => { content.current?.focus({ preventScroll: true }); }, [pageIdentity]);
   return <>
     <a className="skip-link" href="#app-content" onClick={event => {
       event.preventDefault();
@@ -126,7 +136,8 @@ function Application() {
           <Workspace key={workspace.experimentId} expId={workspace.experimentId} tab={workspace.panel} visible={visible} meta={meta.data}
             setExpId={openExperiment} onWorkspace={returnToWorkspace} onHome={onHome} onChangePanel={changePanel}
             settings={workspace.settings} onResources={openResources} onSettings={openSettings} selectedResource={workspace.selectedResource}
-            resourcePurpose={workspace.resourcePurpose} consoleRun={workspace.runId} trainingConsole={workspace.console === 'training'} onViewTraining={viewTraining} />
+            resourcePurpose={workspace.resourcePurpose} consoleRun={workspace.runId} trainingConsole={workspace.console === 'training'} onViewTraining={viewTraining}
+            samples={workspace.samples} onSamples={viewSamples} />
         </section>}
         {route.kind === 'not-found' && <section className="workspace-content">
           <div className="page-stack settings-page">

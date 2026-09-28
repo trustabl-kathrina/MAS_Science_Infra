@@ -213,9 +213,13 @@ class RewardHackingMonitor:
 
     name = "reward_hacking_monitor"
 
-    def __init__(self, z_threshold: float = 2.0, min_siblings: int = 2) -> None:
+    def __init__(self, z_threshold: float = 2.0, min_siblings: int = 2,
+                 reward_level: str = "outcome") -> None:
         self.z_threshold = float(z_threshold)
         self.min_siblings = int(min_siblings)
+        if reward_level not in ("outcome", "credit"):
+            raise ValueError("reward_level must be outcome or credit")
+        self.reward_level = reward_level
 
     def diagnose(self, ctx: Dict[str, Any]) -> List[Hypothesis]:
         tree = ctx.get("tree") or ctx.get("rollout_tree")
@@ -238,11 +242,32 @@ class RewardHackingMonitor:
         nodes = tree.get("nodes") if isinstance(tree, dict) else getattr(tree, "nodes", None)
         if not nodes:
             return []
-        siblings: Dict[str, List[Any]] = defaultdict(list)
+        version = tree.get("schema_version", 1) if isinstance(tree, dict) else getattr(tree, "schema_version", 1)
+        if version == 2:
+            outcomes = tree.get("outcomes", {}) if isinstance(tree, dict) else tree.outcomes
+            projected = []
+            for node in nodes:
+                data = dict(node) if isinstance(node, dict) else node.model_dump()
+                if data.get("origin") != "branch" or data.get("record_issues"):
+                    continue
+                if data.get("store_status") not in ("succeeded", "failed", "cancelled"):
+                    continue
+                window = data.get("window_id") or data.get("event_id")
+                snapshot = data.get("boundary_snapshot_ref")
+                scheme = (data.get("metrics") or {}).get("reward_scheme")
+                if not window or not snapshot or not scheme:
+                    continue
+                data["_comparison_group"] = (data.get("parent_id"), window, snapshot, scheme)
+                if self.reward_level == "outcome":
+                    data["reward"] = (outcomes.get(data["node_id"]) or {}).get("reward")
+                projected.append(data)
+            nodes = projected
+        siblings: Dict[Any, List[Any]] = defaultdict(list)
         for n in nodes:
             pid = n.get("parent_id") if isinstance(n, dict) else getattr(n, "parent_id", None)
             if pid:
-                siblings[str(pid)].append(n)
+                key = n.get("_comparison_group", pid) if isinstance(n, dict) else pid
+                siblings[key].append(n)
         out: List[Hypothesis] = []
         for pid, group in siblings.items():
             def _reward(n: Any) -> Optional[float]:
@@ -284,10 +309,17 @@ class RewardHackingMonitor:
                         Hypothesis(
                             plugin=self.name,
                             message=(
-                                f"reward hacking suspect: node {nid} z={z:+.2f} "
+                                f"reward anomaly (not causal attribution): node {nid} z={z:+.2f} "
                                 f"(reward={r:.3f} vs sibling mean={mean_o:.3f}±{std_o:.3f})"
                             ),
-                            meta={"node_id": nid, "z": z, "parent_id": pid},
+                            meta={
+                                "node_id": nid, "z": None if version == 2 and std_o < 1e-9 else z,
+                                "parent_id": pid[0] if version == 2 else pid,
+                                **({"tree_id": tree.get("tree_id") if isinstance(tree, dict) else tree.tree_id,
+                                    "tree_revision": tree.get("revision") if isinstance(tree, dict) else tree.revision,
+                                    "reward_level": self.reward_level,
+                                    "constant_reference": std_o < 1e-9} if version == 2 else {}),
+                            },
                         )
                     )
         return out

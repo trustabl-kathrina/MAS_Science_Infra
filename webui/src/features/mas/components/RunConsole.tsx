@@ -11,11 +11,13 @@ const ConsoleSummary = memo(function ConsoleSummary() {
     : '无活动训练'}</span>;
 });
 
-export const RunConsole = memo(function RunConsole({ experimentId, active, requestedOpen, requestedRunId }: {
+export const RunConsole = memo(function RunConsole({ experimentId, active, requestedOpen, requestedRunId, hidden, onSamples }: {
   experimentId: string;
   active: boolean;
   requestedOpen?: boolean;
   requestedRunId?: string;
+  hidden?: boolean;
+  onSamples: (runId: string) => void;
 }) {
   const root = useRef<HTMLElement>(null);
   const drag = useRef<{ y: number; height: number; parentHeight: number } | null>(null);
@@ -36,7 +38,7 @@ export const RunConsole = memo(function RunConsole({ experimentId, active, reque
     <Button size="sm" variant="ghost" onClick={() => setOpen(false)}><ChevronDown size={14} />收起</Button>
   </div>;
 
-  return <section ref={root} className={`mas-run-console${open ? ' is-open' : ''}${open && maximized ? ' is-maximized' : ''}`}
+  return <section ref={root} hidden={hidden} className={`mas-run-console${open ? ' is-open' : ''}${open && maximized ? ' is-maximized' : ''}`}
     style={{ '--console-height': `${height}%` } as CSSProperties} aria-label="训练控制台">
     {open && !maximized && <div className="mas-console-resize" role="separator" tabIndex={0} aria-orientation="horizontal"
       aria-label="调整控制台高度" aria-valuenow={Math.round(height)} aria-valuemin={25} aria-valuemax={70}
@@ -66,7 +68,7 @@ export const RunConsole = memo(function RunConsole({ experimentId, active, reque
       <Button size="sm" variant="ghost" onClick={() => setOpen(true)}>展开</Button>
     </div>}
     <div id="mas-console-content" className="run-dock-layout" hidden={!open}>
-      <TrainingConsole experimentId={experimentId} requestedRunId={requestedRunId} active={active && open} controls={controls} />
+      <TrainingConsole experimentId={experimentId} requestedRunId={requestedRunId} active={active && open} controls={controls} onSamples={onSamples} />
     </div>
   </section>;
 });

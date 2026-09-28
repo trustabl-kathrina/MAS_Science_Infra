@@ -49,8 +49,9 @@ export function Snapshot({ experimentId, runId }: { experimentId: string; runId:
   </Dialog.Root>;
 }
 
-const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker, controls }: {
+const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker, controls, onSamples }: {
   experimentId: string; runId: string; active: boolean; picker: ReactNode; controls: ReactNode;
+  onSamples: (runId: string) => void;
 }) {
   const log = useRunLog(experimentId, runId, active);
   const { stopTrain } = useRuntimeCommands();
@@ -107,6 +108,7 @@ const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker,
       <RunClock started={state?.started_at} ended={state?.ended_at} active={active && Boolean(state?.running)} />
       <span className="console-connection" title={log.connection} aria-label={log.connection} />
       <span className="console-heading-spacer" />
+      <Button size="sm" variant="ghost" onClick={() => onSamples(runId)}>采样结果</Button>
       <Snapshot experimentId={experimentId} runId={runId} />
       {state?.running && <Button size="sm" variant="danger"
         disabled={state.state === 'stopping' && state.failure_stage !== 'stop' || action.pending !== null}
@@ -152,8 +154,9 @@ const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker,
   </div>;
 });
 
-export const TrainingConsole = memo(function TrainingConsole({ experimentId, requestedRunId, active, controls }: {
+export const TrainingConsole = memo(function TrainingConsole({ experimentId, requestedRunId, active, controls, onSamples }: {
   experimentId: string; requestedRunId?: string; active: boolean; controls: ReactNode;
+  onSamples: (runId: string) => void;
 }) {
   const activity = useTraining();
   const { viewTraining } = useRuntimeCommands();
@@ -176,7 +179,7 @@ export const TrainingConsole = memo(function TrainingConsole({ experimentId, req
       </Select>;
   return <div className="training-console">
     {history.error && <InlineNotice tone="danger">运行列表读取失败：{history.error}<Button size="sm" onClick={() => void history.refresh()}>重试</Button></InlineNotice>}
-    {runId ? <RunOutput key={runId} experimentId={experimentId} runId={runId} active={active} picker={picker} controls={controls} />
+    {runId ? <RunOutput key={runId} experimentId={experimentId} runId={runId} active={active} picker={picker} controls={controls} onSamples={onSamples} />
       : <><div className="training-run-heading"><Terminal size={14} /><strong>控制台</strong>{picker}<span className="console-heading-spacer" />{controls}</div>
         <div className="training-console-empty"><span className="training-console-empty-mark" aria-hidden="true">&gt;_</span><strong>{history.loading ? '正在读取运行…' : '暂无训练日志'}</strong></div></>}
   </div>;

@@ -188,7 +188,7 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
             branch_local_count = int(as_result.branch_local_count)
             session_metrics = dict(as_result.metrics)
             try:
-                dump_local_expansion(rollout_id, expansion_payload_from_result(as_result))
+                dump_local_expansion(rollout_id, expansion_payload_from_result(as_result, task=task_run))
             except Exception as e:
                 logger.warning("[Rollout %s] dump_local_expansion failed: %s", rollout_id, e)
         else:
@@ -252,8 +252,14 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
             except Exception as e:
                 logger.warning("[Rollout %s] dump_resume failed: %s", rollout_id, e)
         try:
+            from workflow.rollout_results import RESULT_ATTRIBUTE, result_annotation
+
             agl.emit_annotation(
                 {
+                    RESULT_ATTRIBUTE: result_annotation(
+                        rollout_id, rollout.attempt.attempt_id, prediction, reward,
+                        bool(format_ok), bool(raw.error), archive_id,
+                    ),
                     "tir.source": source,
                     "tir.n_search": int(n_search),
                     "tir.n_python": int(n_python),

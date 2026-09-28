@@ -9,7 +9,9 @@ import { InlineNotice } from '../../../shared/components/InlineNotice';
 import { StatusBadge } from '../../../shared/components/StatusBadge';
 import { Snapshot, TRAIN_STATE } from './TrainingConsole';
 
-export const TrainingHistory = memo(function TrainingHistory({ experimentId, active }: { experimentId: string; active: boolean }) {
+export const TrainingHistory = memo(function TrainingHistory({ experimentId, active, onSamples }: {
+  experimentId: string; active: boolean; onSamples: (runId: string) => void;
+}) {
   const [offset, setOffset] = useState(0);
   const [query, setQuery] = useState('');
   const activity = useTraining();
@@ -37,6 +39,7 @@ export const TrainingHistory = memo(function TrainingHistory({ experimentId, act
           {TRAIN_STATE[run.state || ''] || run.state || '未知'}
         </StatusBadge>
         <Snapshot experimentId={experimentId} runId={run.run_id} />
+        <Button size="sm" onClick={() => onSamples(run.run_id)}>采样结果</Button>
         <Button size="sm" onClick={() => viewTraining(run.run_id)}>查看日志</Button>
       </article>)}
       {!runs.length && !history.error && <div className="training-console-empty"><FileText size={24} />

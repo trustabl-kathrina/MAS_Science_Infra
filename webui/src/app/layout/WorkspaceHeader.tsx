@@ -40,10 +40,11 @@ const ExperimentActions = memo(function ExperimentActions({ onReload }: { onRelo
   </>;
 });
 
-export const WorkspaceHeader = memo(function WorkspaceHeader({ bundle, onReload, onHome, active, settings, onChangePanel, onResources }: {
+export const WorkspaceHeader = memo(function WorkspaceHeader({ bundle, onReload, onHome, active, settings, onChangePanel, onResources, readOnlyRun = false }: {
   bundle: Bundle; onReload: () => Promise<void>; onHome: () => void;
   active: PanelId; settings?: SettingsSection; onChangePanel: (panel: PanelId) => void;
   onResources: (category: ResourceCategory) => void;
+  readOnlyRun?: boolean;
 }) {
   return <header className="experiment-header">
     <Button size="sm" variant="ghost" onClick={onHome}><ArrowLeft size={15} /><span>实验</span></Button>
@@ -51,8 +52,8 @@ export const WorkspaceHeader = memo(function WorkspaceHeader({ bundle, onReload,
     <div className="experiment-header-name" title={bundle.meta.name || bundle.id}>
       <FlaskConical size={16} aria-hidden="true" /><span>{bundle.meta.name || bundle.id}</span>
     </div>
-    <GpuStatusControl />
-    <ExperimentActions onReload={onReload} />
+    {readOnlyRun ? <span className="sample-readonly-context">运行记录 · 只读</span> : <><GpuStatusControl />
+      <ExperimentActions onReload={onReload} /></>}
     <nav className="experiment-header-tools" aria-label="资源与工具">
       <Button size="sm" variant="ghost" title="模型与数据" aria-label="模型与数据" onClick={() => onResources('models')}>
         <Database size={15} /><span>模型与数据</span>

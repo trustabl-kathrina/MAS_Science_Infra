@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _utcnow() -> datetime:
@@ -231,6 +231,45 @@ class RolloutTreeNode(BaseModel):
     metrics: Dict[str, Any] = Field(default_factory=dict)
     reward: Optional[float] = None  # node-level credit (P2)
     verdict: Optional[str] = None  # RAE validate | invalidate | abstain (P2)
+    kind: Literal["query", "rollout"] = "rollout"
+    origin: Optional[Literal["initial", "independent_fill", "branch"]] = None
+    attempt_id: Optional[str] = None
+    status: Optional[Literal["enqueued", "running", "succeeded", "failed", "cancelled"]] = None
+    created_at: Optional[datetime] = None
+    plan_id: Optional[str] = None
+    site_id: Optional[str] = None
+    window_id: Optional[str] = None
+    event_id: Optional[str] = None
+    branch_depth: Optional[int] = None
+    decision: Dict[str, Any] = Field(default_factory=dict)
+    attempt_sequence: int = 0
+    store_status: Optional[str] = None
+    attempt_status: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+    execution_error: Optional[str] = None
+    training_status: Optional[Literal["adapted", "empty", "accepted", "rejected"]] = None
+    record_issues: List[str] = Field(default_factory=list)
+    judgments: List[Dict[str, Any]] = Field(default_factory=list)
+    previous_attempts: List[Dict[str, Any]] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class RolloutTreePlan(BaseModel):
+    plan_id: str
+    parent_id: str
+    site_id: Optional[str] = None
+    window_id: Optional[str] = None
+    event_id: Optional[str] = None
+    boundary_snapshot_ref: Optional[str] = None
+    branch_depth: Optional[int] = None
+    role: str = "child"
+    decision: Dict[str, Any] = Field(default_factory=dict)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    status: Literal["planned", "enqueued", "skipped"] = "planned"
+    reason: Optional[str] = None
+    child_rollout_id: Optional[str] = None
 
     model_config = {"extra": "forbid"}
 
@@ -241,9 +280,81 @@ class RolloutTree(BaseModel):
     tree_id: str  # data_id (+ group)
     query: str = ""
     nodes: List[RolloutTreeNode] = Field(default_factory=list)
-    outcomes: Dict[str, Any] = Field(default_factory=dict)  # leaf node_id -> {answer, reward}
+    outcomes: Dict[str, Any] = Field(default_factory=dict)  # rollout_id -> result, including parents
+    schema_version: int = 1
+    experiment_id: Optional[str] = None
+    run_id: Optional[str] = None
+    group_id: Optional[str] = None
+    task_id: Optional[str] = None
+    mode: Optional[Literal["train", "val"]] = None
+    revision: int = 0
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: Optional[datetime] = None
+    plans: List[RolloutTreePlan] = Field(default_factory=list)
+    pending_nodes: List[RolloutTreeNode] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def validate_structure(self) -> "RolloutTree":
+        if self.schema_version == 1:
+            return self
+        if self.schema_version != 2:
+            raise ValueError("Unsupported rollout tree version")
+        if not all((self.experiment_id, self.run_id, self.group_id, self.mode)):
+            raise ValueError("Version 2 trees require run and group identity")
+        by_id = {node.node_id: node for node in self.nodes}
+        all_ids = [node.node_id for node in [*self.nodes, *self.pending_nodes]]
+        if len(set(all_ids)) != len(all_ids) or any(not value for value in all_ids):
+            raise ValueError("Rollout node IDs must be nonempty and unique")
+        roots = [node for node in self.nodes if node.kind == "query"]
+        if len(roots) != 1:
+            raise ValueError("A rollout tree requires exactly one query root")
+        root = roots[0]
+        if root.parent_id is not None or root.depth != 0 or any(
+            value is not None for value in (root.status, root.reward, root.attempt_id, root.origin)
+        ):
+            raise ValueError("Query root cannot carry execution state")
+        for node in self.nodes:
+            if node is root:
+                continue
+            parent = by_id.get(node.parent_id)
+            if parent is None or node.depth != parent.depth + 1:
+                raise ValueError("Invalid parent or depth (including cyclic ancestry)")
+            if node.origin == "branch":
+                if parent.kind != "rollout":
+                    raise ValueError("Branch parent must be a rollout")
+            elif node.origin not in ("initial", "independent_fill") or parent is not root:
+                raise ValueError("Independent rollout must belong to the query root")
+        pending = {node.node_id: node for node in self.pending_nodes}
+        for node in self.pending_nodes:
+            if node.kind != "rollout" or node.origin != "branch" or not node.parent_id:
+                raise ValueError("Only unresolved branches can be pending")
+            seen = {node.node_id}
+            current = node.parent_id
+            while current in pending:
+                if current in seen:
+                    raise ValueError("Cyclic pending lineage")
+                seen.add(current)
+                current = pending[current].parent_id
+        plans = {plan.plan_id: plan for plan in self.plans}
+        if len(plans) != len(self.plans):
+            raise ValueError("Duplicate rollout plan identity")
+        all_nodes = {**by_id, **pending}
+        for plan in self.plans:
+            if plan.status == "enqueued":
+                child = all_nodes.get(plan.child_rollout_id)
+                if child is None or child.plan_id != plan.plan_id:
+                    raise ValueError("Enqueued plan requires its actual rollout")
+            elif plan.child_rollout_id is not None:
+                raise ValueError("Unsubmitted plan cannot have an actual rollout")
+        for node in [*self.nodes, *self.pending_nodes]:
+            if node.plan_id:
+                plan = plans.get(node.plan_id)
+                if plan is None or plan.parent_id != node.parent_id or plan.child_rollout_id != node.node_id:
+                    raise ValueError("Rollout does not match its submitted plan")
+        return self
 
     def leaves(self) -> List[str]:
         parents = {n.parent_id for n in self.nodes if n.parent_id}
@@ -272,6 +383,10 @@ class RolloutTreeEvent(BaseModel):
     tree_id: str
     node_id: Optional[str] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
+    schema_version: int = 1
+    experiment_id: Optional[str] = None
+    run_id: Optional[str] = None
+    revision: Optional[int] = None
 
     model_config = {"extra": "forbid"}
 

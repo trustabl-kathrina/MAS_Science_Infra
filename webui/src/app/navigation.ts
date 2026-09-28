@@ -32,6 +32,13 @@ export interface WorkspaceRoute {
   resourcePurpose?: 'inference' | 'training';
   console?: 'training';
   runId?: string;
+  samples?: SampleSelection;
+}
+export interface SampleSelection {
+  runId: string;
+  treeId?: string;
+  nodeId?: string;
+  view: 'answers' | 'branches';
 }
 export type AppRoute = { kind: 'home' } | WorkspaceRoute | ResourceRoute | { kind: 'not-found' };
 
@@ -50,6 +57,12 @@ export function routeHash(route: Exclude<AppRoute, { kind: 'not-found' }>): stri
   if (route.resourcePurpose) params.set('purpose', route.resourcePurpose);
   if (route.console) params.set('console', route.console);
   if (route.runId) params.set('run', route.runId);
+  if (route.samples) {
+    if (route.samples.treeId) params.set('tree', route.samples.treeId);
+    if (route.samples.nodeId) params.set('answer', route.samples.nodeId);
+    params.set('view', route.samples.view);
+    return `${base}/runs/${encodeURIComponent(route.samples.runId)}/samples?${params}`;
+  }
   const suffix = params.size ? `?${params}` : '';
   if (route.settings) return `${base}/workspace/settings/${route.settings}${suffix}`;
   return (route.panel === 'mas' ? `${base}/workspace` : `${base}/panels/${route.panel}`) + suffix;
@@ -84,6 +97,17 @@ export function parseRoute(hash: string): AppRoute {
     runId: params.get('run') || undefined,
   } : {};
   if (consoleState.runId && !/^[a-f0-9]{12}$/.test(consoleState.runId)) return { kind: 'not-found' };
+  if (parts.length === 6 && parts[3] === 'runs' && parts[5] === 'samples') {
+    const runId = parts[4];
+    const treeId = params.get('tree') || undefined;
+    const nodeId = params.get('answer') || undefined;
+    const view = params.get('view') || 'answers';
+    if (!/^[a-f0-9]{12}$/.test(runId) || (treeId && !/^[a-f0-9]{32}$/.test(treeId))
+      || (nodeId && (!treeId || nodeId.length > 256 || /[\u0000-\u001f]/.test(nodeId)))
+      || !['answers', 'branches'].includes(view)) return { kind: 'not-found' };
+    return { ...workspaceRoute(experimentId, 'records'), ...consoleState,
+      samples: { runId, treeId, nodeId, view: view as SampleSelection['view'] } };
+  }
   if (parts.length === 4 && parts[3] === 'workspace') return { ...workspaceRoute(experimentId), ...consoleState };
   if (parts.length === 6 && parts[3] === 'workspace' && parts[4] === 'settings') {
     const section = parts[5];

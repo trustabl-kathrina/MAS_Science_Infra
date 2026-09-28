@@ -198,8 +198,9 @@
 
 1. [采样编排第一阶段：可执行站点与续跑前缀](../webui/plan/采样编排第一阶段-可执行站点与续跑前缀.md)
 2. [采样编排第二阶段：画布与策略编辑](../webui/plan/采样编排第二阶段-画布与策略编辑.md)
-3. [Rollout Tree 第一阶段：按 run 存储与结果回填](../webui/plan/RolloutTree第一阶段-按run存储与结果回填.md)
-4. [Rollout Tree 第二阶段：节点详情与实时更新](../webui/plan/RolloutTree第二阶段-节点详情与实时更新.md)
-5. [训练 T4：RL 算法收口与真实训练验收](../webui/plan/训练运行第四阶段-RL算法收口与真实训练验收.md)
+3. [RolloutTree 第一阶段：树结构与运行归档](../webui/plan/RolloutTree第一阶段-树结构与运行归档.md)；节点粒度与结果语义见[实施总览](../webui/plan/RolloutTree实施总览.md)。
+4. [RolloutTree 第二阶段：结果回填与按运行读取](../webui/plan/RolloutTree第二阶段-结果回填与按运行读取.md)
+5. [RolloutTree 第三阶段：树视图与持续更新](../webui/plan/RolloutTree第三阶段-树视图与持续更新.md)
+6. [训练 T4：RL 算法收口与真实训练验收](../webui/plan/训练运行第四阶段-RL算法收口与真实训练验收.md)
 
 以 [Main 核心功能清单](./MAIN_FUNCTION_INVENTORY.md) 记录各项的实际完成状态；[new_framework 设计](./NEW_FRAMEWORK_DESIGN.md) 是目标合同，未有对应事件、快照和运行产物时不视为代码已实现。

@@ -1,0 +1,147 @@
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, RefreshCw } from 'lucide-react';
+import type { SampleSelection } from '../../app/navigation';
+import { useRuntimeCommands } from '../../app/providers/RuntimeProvider';
+import { Button } from '../../shared/ui/button';
+import { Select } from '../../shared/ui/select';
+import { InlineNotice } from '../../shared/components/InlineNotice';
+import { Snapshot, TRAIN_STATE } from '../training/components/TrainingConsole';
+import { AnswerDetails } from './AnswerDetails';
+import { AnswerList } from './AnswerList';
+import { MAX_PAGES } from './model';
+import { useSampleResults } from './useSampleResults';
+
+const BranchGraph = lazy(() => import('./BranchGraph'));
+
+export const SampleResults = memo(function SampleResults({ experimentId, selection, active, onNavigate, onBack }: {
+  experimentId: string; selection: SampleSelection; active: boolean;
+  onNavigate: (selection: SampleSelection) => void; onBack: () => void;
+}) {
+  const state = useSampleResults(experimentId, selection.runId, selection.treeId, selection.nodeId, active);
+  const { viewTraining } = useRuntimeCommands();
+  const navigation = useRef({ selection, onNavigate });
+  useLayoutEffect(() => { navigation.current = { selection, onNavigate }; }, [selection, onNavigate]);
+  const selectTree = useCallback((treeId: string) => navigation.current.onNavigate({
+    ...navigation.current.selection, treeId, nodeId: undefined,
+  }), []);
+  const selectAnswer = useCallback((nodeId: string) => navigation.current.onNavigate({
+    ...navigation.current.selection, nodeId,
+  }), []);
+  const trigger = useRef<HTMLElement | null>(null);
+  const closeDetails = useCallback(() => {
+    navigation.current.onNavigate({ ...navigation.current.selection, nodeId: undefined });
+    requestAnimationFrame(() => { if (trigger.current?.isConnected) trigger.current.focus({ preventScroll: true }); });
+  }, []);
+  const openAnswer = useCallback((id: string) => {
+    trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    selectAnswer(id);
+  }, [selectAnswer]);
+  useEffect(() => {
+    if (active && !selection.treeId && state.list.data?.items[0]) selectTree(state.list.data.items[0].tree_id);
+  }, [active, selection.treeId, state.list.data, selectTree]);
+  const data = state.detail.data;
+  const nodes = useMemo(() => data ? [...data.tree.nodes, ...data.tree.pending_nodes].filter(n => n.kind !== 'query') : [], [data?.tree.nodes, data?.tree.pending_nodes]);
+  const chosen = useMemo(() => nodes.find(node => node.node_id === selection.nodeId), [nodes, selection.nodeId]);
+  const summary = state.list.data?.items.find(item => item.tree_id === selection.treeId);
+  const [graphTree, setGraphTree] = useState<string>();
+  useEffect(() => {
+    if (selection.view === 'branches') setGraphTree(selection.treeId);
+  }, [selection.view, selection.treeId]);
+  const displayGraph = selection.view === 'branches' || graphTree === selection.treeId;
+  const run = state.run.data;
+  const issues = state.run.error || state.list.error || state.detail.error;
+  return <section className="sample-results" aria-label="采样结果">
+    <header className="sample-page-header">
+      <div><Button size="sm" variant="ghost" onClick={onBack}><ArrowLeft size={14} />训练记录</Button>
+        <h1>采样结果</h1>
+        <p>{run?.meta?.algo ? String(run.meta.algo).toUpperCase() : '算法未记录'} · {run?.started_at ? new Date(run.started_at * 1000).toLocaleString() : '时间未记录'}
+          {' · '}{TRAIN_STATE[run?.state || state.list.data?.run_state || ''] || '读取状态…'}</p>
+        <small>本次运行 <code>{selection.runId}</code>{data?.tree.updated_at ? ` · 记录更新于 ${new Date(data.tree.updated_at).toLocaleTimeString()}` : ''}</small>
+      </div>
+      <div className="sample-actions"><Button size="sm" onClick={() => viewTraining(selection.runId)}>查看日志</Button>
+        <Snapshot experimentId={experimentId} runId={selection.runId} />
+        <Button size="sm" variant="ghost" onClick={state.refresh}><RefreshCw size={14} />刷新</Button></div>
+    </header>
+    {issues && <InlineNotice tone="warning">读取未完成，已加载内容可能陈旧：{issues}<Button size="sm" onClick={state.refresh}>重试</Button>
+      {state.cursor && <Button size="sm" onClick={state.resetWindow}>从首批重新读取</Button>}
+    </InlineNotice>}
+    {state.list.data?.recording_status === 'degraded' && <InlineNotice tone="warning">本次运行的记录存在缺口，不代表所有回答执行失败。
+      <details><summary>记录问题</summary>{state.list.data.recording_errors?.map(error => <p key={error}>{error}</p>)}</details>
+    </InlineNotice>}
+    <div className={`sample-body${chosen ? ' has-details' : ''}`}>
+      <aside className="sample-topics" aria-label="题目记录">
+        <div className="sample-topics-heading"><strong>题目记录</strong>
+          <Select aria-label="筛选训练或验证" value={state.mode} onChange={event => {
+            state.filter(event.target.value);
+            onNavigate({ ...selection, treeId: undefined, nodeId: undefined });
+          }}>
+            <option value="">训练与验证</option><option value="train">训练</option><option value="val">验证</option>
+          </Select></div>
+        <div className="sample-topic-list">
+          {state.list.data?.items.map(item => <button type="button" key={item.tree_id} className={`sample-topic${item.tree_id === selection.treeId ? ' is-selected' : ''}`}
+            aria-pressed={item.tree_id === selection.treeId} onClick={() => selectTree(item.tree_id)}>
+            <strong>{item.query || (item.availability === 'unreadable' ? '题目记录读取失败' : '题目内容未记录')}</strong>
+            <span>{item.rollout_count} 次生成 · {item.branch_count ? `${item.branch_count} 次来自分支` : '无分支'}</span>
+            <small>{item.mode === 'train' ? '训练' : '验证'} · {item.group_id.slice(0, 8)} · {new Date(item.created_at).toLocaleTimeString()}</small>
+            {(item.failed_count > 0 || item.missing_result_count > 0 || item.error) && <small className="sample-warning">
+              {item.error || `执行失败 ${item.failed_count} · 结果有缺失 ${item.missing_result_count}`}</small>}
+          </button>)}
+          {!state.list.data?.items.length && <p className="sample-empty">{state.list.loading ? '读取题目记录…' :
+            state.list.error ? '题目记录读取失败，请重试。' : state.list.data?.availability === 'missing' ? '此运行尚无采样记录，或创建于旧版本。' : '暂无符合范围的题目记录。'}</p>}
+        </div>
+        <footer><Button size="sm" disabled={state.offset === 0} onClick={() => state.setOffset(Math.max(0, state.offset - 20))}>上一页</Button>
+          <small>{state.list.data?.total ?? '—'} 条记录</small>
+          <Button size="sm" disabled={state.list.data?.next_offset == null} onClick={() => state.setOffset(state.list.data!.next_offset!)}>下一页</Button></footer>
+      </aside>
+      <div className="sample-main" role="region" aria-label="题目回答">
+        {!data ? <p className="sample-empty">{state.detail.error ? '此题目读取失败，请重试。' : selection.treeId ? '读取回答…' : '选择左侧题目，查看生成过的回答。'}</p> : <>
+          <div className="sample-question"><h2>{data.tree.query || '题目内容未记录'}</h2>
+            {data.tree.query_truncated && <small>题目为截断摘要</small>}
+            <p>{data.tree.mode === 'train' ? '训练' : '验证'} · 采样记录 {data.tree.group_id.slice(0, 12)}
+              {summary && ` · 已结束 ${summary.completed_count}/${summary.rollout_count} · 执行失败 ${summary.failed_count}`}
+            </p>
+            <div className="sample-view-switch" role="group" aria-label="结果查看方式">
+              <Button size="sm" variant={selection.view === 'answers' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'answers'}
+                onClick={() => onNavigate({ ...selection, view: 'answers' })}>回答列表</Button>
+              <Button size="sm" variant={selection.view === 'branches' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'branches'}
+                onClick={() => onNavigate({ ...selection, view: 'branches' })}>分支关系</Button>
+            </div>
+          </div>
+          {selection.nodeId && !chosen && <InlineNotice tone="warning">
+            {data.lookup_node_id === selection.nodeId
+              ? '所选回答尚未加载或来源无法确认。已进行有界查找，不会用其他记录代替。'
+              : '正在定位所选回答…'}
+            <Button size="sm" onClick={closeDetails}>关闭选择</Button></InlineNotice>}
+          {(state.cursor || state.detail.error) && <Button size="sm" variant="ghost" onClick={state.resetWindow}>从首批重新读取回答</Button>}
+          <div key={selection.treeId} className="sample-views">
+            <div className="sample-answer-scroll" hidden={selection.view !== 'answers'}>
+              <AnswerList nodes={nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
+            </div>
+            {displayGraph && <div className="sample-graph-host" hidden={selection.view !== 'branches'}>
+              <Suspense fallback={<p className="sample-empty">加载分支关系…</p>}>
+                <BranchGraph nodes={data.tree.nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
+              </Suspense>
+            </div>}
+          </div>
+          {data.tree.pending_nodes.length > 0 && <p className="sample-warning">有 {data.tree.pending_nodes.length} 条记录的父节点待关联；可在回答列表查看，未伪装为树根。</p>}
+          <div className="sample-load-more"><small>当前窗口已加载 {nodes.length}/{data.page.total} 条（含必要来源）；奖励与完成状态不等于答案正确。</small>
+            {data.page.next_cursor && <Button size="sm" onClick={() => {
+              if (state.pages >= MAX_PAGES) { closeDetails(); state.nextWindow(); }
+              else state.loadMore();
+            }}>{state.pages >= MAX_PAGES ? '查看下一批回答' : '加载更多回答'}</Button>}</div>
+          {data.page.plan_total > 0 && <details className="sample-plans"><summary>分支计划 · 已加载 {data.tree.plans.length}/{data.page.plan_total}</summary>
+            {data.tree.plans.filter(plan => plan.status !== 'enqueued').map(plan => <p key={plan.plan_id}>
+              {plan.site_id || '位置未记录'} · {plan.status === 'skipped' ? '未执行' : '等待入队'}
+              {' · '}{({ budget_exhausted: '预算不足', missing_resume_messages: '缺少恢复前缀' })[plan.reason || ''] || plan.reason || '原因未记录'}
+            </p>)}
+            {!data.tree.plans.some(plan => plan.status !== 'enqueued') && <p>已加载的计划均已入队。</p>}
+            {data.page.next_plan_offset !== null && <Button size="sm" disabled={state.planPages >= MAX_PAGES} onClick={() => state.loadMore(true)}>
+              {state.planPages >= MAX_PAGES ? '已达计划加载上限' : '加载更多计划'}</Button>}
+          </details>}
+        </>}
+      </div>
+      {chosen && data && <AnswerDetails key={`${selection.treeId}:${chosen.node_id}`} node={chosen} outcome={data.tree.outcomes[chosen.node_id]}
+        unresolved={data.tree.pending_nodes.some(n => n.node_id === chosen.node_id)} onSelect={selectAnswer} onClose={closeDetails} />}
+    </div>
+  </section>;
+});

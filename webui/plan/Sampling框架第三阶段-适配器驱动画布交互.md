@@ -176,4 +176,4 @@ execute_python 结果返回 Hub 后
 
 ## Next Phase
 
-完成 ARPO 服务器闭环后，再决定先实现下一个算法 Adapter，或进入[按 run 存储 Rollout Tree](RolloutTree第一阶段-按run存储与结果回填.md)。两者都不属于本轮 Sampling 三阶段。
+完成 ARPO 服务器闭环后，再决定先实现下一个算法 Adapter，或进入 [RolloutTree 三阶段闭环](RolloutTree实施总览.md)。两者都不属于本轮 Sampling 三阶段。

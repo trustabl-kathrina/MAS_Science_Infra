@@ -1,16 +1,17 @@
-import { memo, useCallback, useEffect, useState, type ReactNode } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { Bundle, MetaResponse } from '../../shared/api/types';
 import { ExperimentPanel } from '../../pages/Experiment';
 import { MASPanel } from '../../pages/MAS';
 import { MonitorPanel } from '../../pages/Monitor';
 import { useAgl, useMonitor, useTraining } from '../providers/RuntimeProvider';
-import { isCanvasPanel, type PanelId, type ResourceCategory } from '../navigation';
+import { isCanvasPanel, type PanelId, type ResourceCategory, type SampleSelection } from '../navigation';
 import type { SettingsSection } from '../../features/settings/model/sections';
 import { RunConsole } from '../../features/mas/components/RunConsole';
 import { TrainingHistory } from '../../features/training/components/TrainingHistory';
 
 const Experiment = memo(ExperimentPanel);
 const Mas = memo(MASPanel);
+const SampleResults = lazy(() => import('../../features/rollout-tree/SampleResults').then(module => ({ default: module.SampleResults })));
 
 function RetainedPanel({ active, id, label, children }: {
   active: boolean; id: PanelId; label: string; children: ReactNode;
@@ -32,7 +33,7 @@ const MonitorConnection = memo(function MonitorConnection({ expId, visible }: { 
     aglOnline={!!agl.data?.ok && !agl.error} onRefreshLog={refresh} />;
 });
 
-export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, bundle, meta, onReload, setExpId, onWorkspace, settings, onResources, onSettings, selectedResource, resourcePurpose, consoleRun, trainingConsole }: {
+export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, bundle, meta, onReload, setExpId, onWorkspace, settings, onResources, onSettings, selectedResource, resourcePurpose, consoleRun, trainingConsole, samples, onSamples, onChangePanel }: {
   active: PanelId; visible: boolean; bundle: Bundle; meta: MetaResponse | null; onReload: () => Promise<void>; setExpId: (id: string) => void;
   onWorkspace: () => void;
   settings?: SettingsSection; onResources: (category: ResourceCategory) => void;
@@ -41,11 +42,16 @@ export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, 
   resourcePurpose?: 'inference' | 'training';
   consoleRun?: string;
   trainingConsole?: boolean;
+  samples?: SampleSelection;
+  onSamples: (selection: SampleSelection) => void;
+  onChangePanel: (id: PanelId) => void;
 }) {
   const common = { expId: bundle.id, bundle, onReload };
   const canvas = isCanvasPanel(active);
   const requestedSettings = settings || (active === 'llm' ? 'inference' : active === 'rl' ? 'training' : active === 'harness' ? 'diagnostics' : null);
   const [jump, setJump] = useState(0);
+  const openSamples = useCallback((runId: string) => onSamples({ runId, view: 'answers' }), [onSamples]);
+  const backToRecords = useCallback(() => onChangePanel('records'), [onChangePanel]);
   const configure = useCallback((section: SettingsSection) => {
     setJump(value => value + 1);
     onSettings(section);
@@ -64,11 +70,18 @@ export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, 
     <RetainedPanel id="monitor" label="实验监控" active={visible && active === 'monitor'}>
       <MonitorConnection expId={bundle.id} visible={visible && active === 'monitor'} />
     </RetainedPanel>
-    <RetainedPanel id="records" label="训练记录" active={visible && active === 'records'}>
-      <TrainingHistory experimentId={bundle.id} active={visible && active === 'records'} />
+    <RetainedPanel id="records" label="训练记录" active={visible && active === 'records' && !samples}>
+      <TrainingHistory experimentId={bundle.id} active={visible && active === 'records' && !samples} onSamples={openSamples} />
     </RetainedPanel>
+    {samples && <div hidden={!visible} role="region" aria-label="训练采样结果">
+      <Suspense fallback={<p className="sample-empty">加载采样结果页面…</p>}>
+        <SampleResults key={`${bundle.id}:${samples.runId}`} experimentId={bundle.id} selection={samples}
+          active={visible} onNavigate={onSamples} onBack={backToRecords} />
+      </Suspense>
+    </div>}
     </div>
-    <RunConsole experimentId={bundle.id} active={visible} requestedRunId={consoleRun} requestedOpen={trainingConsole} />
+    <RunConsole experimentId={bundle.id} active={visible && (!samples || !!trainingConsole)}
+      hidden={!!samples && !trainingConsole} requestedRunId={consoleRun} requestedOpen={trainingConsole} onSamples={openSamples} />
     </div>
   </div>;
 });

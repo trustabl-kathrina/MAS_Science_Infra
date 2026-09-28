@@ -155,9 +155,10 @@ cd webui && npm run build
 
 1. [采样编排第一阶段：可执行站点与续跑前缀](../webui/plan/采样编排第一阶段-可执行站点与续跑前缀.md)：核对事件、站点、Gate 与对应快照；不支持的声明明确阻断。
 2. [采样编排第二阶段：画布与策略编辑](../webui/plan/采样编排第二阶段-画布与策略编辑.md)：在同一份 Workflow 上编辑可执行站点，区分配置预览与训练结果。
-3. [Rollout Tree 第一阶段：按 run 存储与结果回填](../webui/plan/RolloutTree第一阶段-按run存储与结果回填.md)：从训练事实生成 run 级树和真实 outcome。
-4. [Rollout Tree 第二阶段：节点详情与实时更新](../webui/plan/RolloutTree第二阶段-节点详情与实时更新.md)：按 run 查询、展示并续读事件。
-5. [训练 T4：RL 算法收口与真实训练验收](../webui/plan/训练运行第四阶段-RL算法收口与真实训练验收.md)：逐算法确认有效配置及服务器训练行为；前述阶段不能替代此验收。
+3. [RolloutTree 第一阶段：树结构与运行归档](../webui/plan/RolloutTree第一阶段-树结构与运行归档.md)：统一 query 分组、真实分支映射和运行归档；语义裁决见[实施总览](../webui/plan/RolloutTree实施总览.md)。
+4. [RolloutTree 第二阶段：结果回填与按运行读取](../webui/plan/RolloutTree第二阶段-结果回填与按运行读取.md)：回填实际结果和已有判定，提供归属校验后的读取。
+5. [RolloutTree 第三阶段：树视图与持续更新](../webui/plan/RolloutTree第三阶段-树视图与持续更新.md)：交付树页、候选对比和有界持续更新。
+6. [训练 T4：RL 算法收口与真实训练验收](../webui/plan/训练运行第四阶段-RL算法收口与真实训练验收.md)：逐算法确认有效配置及服务器训练行为；前述阶段不能替代此验收。
 
 其后继续：
 

@@ -51,6 +51,7 @@ class ForkPlan:
     meta: Dict[str, Any] = field(default_factory=dict)
     site_id: str = ""
     role: str = "child"  # child | probe
+    plan_id: str = field(default_factory=lambda: f"plan:{uuid4().hex}")
 
 
 @dataclass
@@ -502,7 +503,9 @@ def tree_from_plans(
     return RolloutTree(tree_id=str(parent_id), query=query, nodes=nodes)
 
 
-def expansion_payload_from_result(result: ActiveSetResult) -> Dict[str, Any]:
+def expansion_payload_from_result(
+    result: ActiveSetResult, *, task: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Serializable plans for Daemon wave-2 enqueue (dual format: tree + flat plans)."""
     parent_ids = [str(p.parent_id) for p in result.plans]
     parent_id = parent_ids[0] if parent_ids else ""
@@ -510,9 +513,15 @@ def expansion_payload_from_result(result: ActiveSetResult) -> Dict[str, Any]:
         "branch_local_count": int(result.branch_local_count),
         "global_fill_count": int(result.global_fill_count),
         "metrics": dict(result.metrics),
-        "tree": tree_from_plans(parent_id, list(result.plans)).model_dump(),
+        "tree": tree_from_plans(parent_id, list(result.plans), task=task).model_dump(
+            include={"tree_id": True, "query": True, "outcomes": True, "nodes": {"__all__": {
+                "node_id", "parent_id", "depth", "role", "agent_path",
+                "boundary_snapshot_ref", "metrics", "reward", "verdict",
+            }}}
+        ),
         "plans": [
             {
+                "plan_id": p.plan_id,
                 "resume_messages": p.resume_messages,
                 "parent_id": p.parent_id,
                 "depth": p.depth,

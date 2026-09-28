@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Type
 
 from agentlightning.verl.trainer import AgentLightningTrainer
 
 from .advantage import apply_tir_advantages
 from .daemon import TirAgentModeDaemon
+from .rollout_tree import TREE_ENV_KEYS
 
 
 class TirAgentLightningTrainer(AgentLightningTrainer):
@@ -40,9 +42,13 @@ class TirAgentLightningTrainer(AgentLightningTrainer):
 
 
 def bound_daemon_cls(tir_algo: str, tir_config: dict) -> Type[TirAgentModeDaemon]:
+    # Capture launch identity before Ray serializes the daemon class.
+    tree_context = {key: os.environ[key] for key in TREE_ENV_KEYS if key in os.environ}
+
     class _BoundTirDaemon(TirAgentModeDaemon):
         def __init__(self, *args: Any, **kwargs: Any):
-            super().__init__(*args, tir_algo=tir_algo, tir_config=tir_config, **kwargs)
+            super().__init__(*args, tir_algo=tir_algo, tir_config=tir_config,
+                             tree_context=tree_context, **kwargs)
 
     _BoundTirDaemon.__name__ = f"TirAgentModeDaemon_{tir_algo}"
     return _BoundTirDaemon
