@@ -1,5 +1,7 @@
 # Plan
 
+> 2026-09-28 后续范围：本文三个阶段保留为“rollout 来源与回答浏览”交付记录。用户要求的逐 Agent 执行、真实推理/工具内容和共享前缀过程树，转入 [RolloutTree 执行树实施总览](RolloutTree执行树实施总览.md) 的 E1–E5。下文排除完整执行树的 Scope 是上一轮边界，不再是后续目标；已有完成项不能代表新一轮已完成。
+
 以 [new_framework 设计](../../docs/New_framework_design.md) §1.4–1.6、§2.4–2.7 为主要依据，完成 RolloutTree 的最小闭环：实际采样产生树，结果与判定回填，按运行保存，页面持续读取并解释分支来源。
 
 三个阶段代码均已接入，核心快速检查与前端生产编译通过，真实服务器训练及浏览器视觉验收待完成；详细进展见各阶段 Implementation Notes。只补 RolloutTree，不重写 Sampling、Store、VERL、优化器或整个日志系统。

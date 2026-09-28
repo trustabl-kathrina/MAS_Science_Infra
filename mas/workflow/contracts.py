@@ -239,7 +239,14 @@ class RolloutTreeNode(BaseModel):
     metrics: Dict[str, Any] = Field(default_factory=dict)
     reward: Optional[float] = None  # node-level credit (P2)
     verdict: Optional[str] = None  # RAE validate | invalidate | abstain (P2)
-    kind: Literal["query", "rollout"] = "rollout"
+    kind: Literal["query", "rollout", "execution", "outcome"] = "rollout"
+    rollout_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    agent_kind: Optional[Literal["agent", "tool"]] = None
+    turn: Optional[int] = None
+    summary: Optional[str] = None
+    detail_ref: Optional[str] = None
+    result_node_id: Optional[str] = None
     origin: Optional[Literal["initial", "independent_fill", "branch"]] = None
     attempt_id: Optional[str] = None
     status: Optional[Literal["enqueued", "running", "succeeded", "failed", "cancelled"]] = None
@@ -278,6 +285,38 @@ class RolloutTreePlan(BaseModel):
     status: Literal["planned", "enqueued", "skipped"] = "planned"
     reason: Optional[str] = None
     child_rollout_id: Optional[str] = None
+    source_attempt_id: Optional[str] = None
+    fork_node_ids: List[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class RolloutTreeEdge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    kind: Literal["sequence", "branch"] = "sequence"
+    window_id: Optional[str] = None
+    snapshot_ref: Optional[str] = None
+    site_id: Optional[str] = None
+
+    model_config = {"extra": "forbid"}
+
+
+class ExecutionTrace(BaseModel):
+    """One runner-owned attempt index; message bodies live in node detail files."""
+
+    rollout_id: str
+    attempt_id: str
+    nodes: List[RolloutTreeNode] = Field(default_factory=list)
+    edges: List[RolloutTreeEdge] = Field(default_factory=list)
+    entry_ids: List[str] = Field(default_factory=list)
+    tail_ids: List[str] = Field(default_factory=list)
+    windows: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+    resume: Dict[str, Any] = Field(default_factory=dict)
+    resume_applied: bool = False
+    complete: bool = False
+    errors: List[str] = Field(default_factory=list)
+    revision: int = 0
 
     model_config = {"extra": "forbid"}
 
@@ -301,6 +340,8 @@ class RolloutTree(BaseModel):
     plans: List[RolloutTreePlan] = Field(default_factory=list)
     pending_nodes: List[RolloutTreeNode] = Field(default_factory=list)
     issues: List[str] = Field(default_factory=list)
+    edges: List[RolloutTreeEdge] = Field(default_factory=list)
+    rollouts: List[RolloutTreeNode] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -308,7 +349,7 @@ class RolloutTree(BaseModel):
     def validate_structure(self) -> "RolloutTree":
         if self.schema_version == 1:
             return self
-        if self.schema_version != 2:
+        if self.schema_version not in (2, 3):
             raise ValueError("Unsupported rollout tree version")
         if not all((self.experiment_id, self.run_id, self.group_id, self.mode)):
             raise ValueError("Version 2 trees require run and group identity")
@@ -324,6 +365,9 @@ class RolloutTree(BaseModel):
             value is not None for value in (root.status, root.reward, root.attempt_id, root.origin)
         ):
             raise ValueError("Query root cannot carry execution state")
+        if self.schema_version == 3:
+            self._validate_executions(by_id)
+            return self
         for node in self.nodes:
             if node is root:
                 continue
@@ -364,11 +408,65 @@ class RolloutTree(BaseModel):
                     raise ValueError("Rollout does not match its submitted plan")
         return self
 
+    def _validate_executions(self, by_id: Dict[str, RolloutTreeNode]) -> None:
+        from collections import deque
+
+        records = {record.node_id: record for record in self.rollouts}
+        if len(records) != len(self.rollouts) or any(r.kind != "rollout" for r in self.rollouts):
+            raise ValueError("Execution trees require unique rollout records")
+        for node in self.nodes:
+            if node.kind == "query":
+                continue
+            if node.kind not in ("execution", "outcome") or node.rollout_id not in records or not node.attempt_id:
+                raise ValueError("Execution node is missing rollout/attempt identity")
+        incoming = dict.fromkeys(by_id, 0)
+        children: Dict[str, List[str]] = {key: [] for key in by_id}
+        edges = set()
+        for edge in self.edges:
+            source, target = edge.source_node_id, edge.target_node_id
+            if source not in by_id or target not in by_id or (source, target) in edges:
+                raise ValueError("Invalid or duplicate execution edge")
+            if by_id[target].kind == "query" or by_id[source].kind == "outcome":
+                raise ValueError("Query and outcome must be path endpoints")
+            if edge.kind == "branch" and (
+                not edge.window_id or not edge.snapshot_ref or by_id[source].kind != "execution"
+            ):
+                raise ValueError("A branch requires a real execution window and snapshot")
+            edges.add((source, target))
+            children[source].append(target)
+            incoming[target] += 1
+        ready = deque(key for key, count in incoming.items() if count == 0)
+        visited = 0
+        while ready:
+            visited += 1
+            for child in children[ready.popleft()]:
+                incoming[child] -= 1
+                if incoming[child] == 0:
+                    ready.append(child)
+        if visited != len(by_id):
+            raise ValueError("Cyclic execution graph")
+
     def leaves(self) -> List[str]:
+        if self.schema_version == 3:
+            return [n.node_id for n in self.nodes if n.kind == "outcome"]
         parents = {n.parent_id for n in self.nodes if n.parent_id}
         return [n.node_id for n in self.nodes if n.node_id not in parents]
 
     def path_to_root(self, node_id: str) -> List[str]:
+        if self.schema_version == 3:
+            parents: Dict[str, List[str]] = {}
+            for edge in self.edges:
+                parents.setdefault(edge.target_node_id, []).append(edge.source_node_id)
+            out: List[str] = []
+            stack = [node_id]
+            seen: set[str] = set()
+            while stack:
+                current = stack.pop()
+                if current not in seen:
+                    seen.add(current)
+                    out.append(current)
+                    stack.extend(reversed(parents.get(current, [])))
+            return out
         by_id = {n.node_id: n for n in self.nodes}
         out: List[str] = []
         cur: Optional[str] = node_id
@@ -382,6 +480,11 @@ class RolloutTree(BaseModel):
 
     def add_node(self, node: "RolloutTreeNode") -> None:
         self.nodes.append(node)
+
+    def rollout_records(self) -> List[RolloutTreeNode]:
+        if self.schema_version == 3:
+            return self.rollouts
+        return [node for node in [*self.nodes, *self.pending_nodes] if node.kind == "rollout"]
 
 
 class RolloutTreeEvent(BaseModel):

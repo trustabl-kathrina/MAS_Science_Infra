@@ -17,7 +17,7 @@ from workflow.rollout_tree import RolloutTreeArchive
 from workflow.rollout_results import TERMINAL, read_results
 
 logger = logging.getLogger(__name__)
-TREE_ENV_KEYS = ("TIR_ROLLOUT_TREE_DIR", "TIR_EXPERIMENT_ID", "TIR_RUN_ID")
+TREE_ENV_KEYS = ("TIR_ROLLOUT_TREE_DIR", "TIR_EXPERIMENT_ID", "TIR_RUN_ID", "TIR_EXECUTION_TREE_VERSION")
 
 
 class RolloutTreeRecorder:
@@ -29,11 +29,12 @@ class RolloutTreeRecorder:
         if not context.get("TIR_ROLLOUT_TREE_DIR"):
             return
         try:
-            if not all(context.get(key) for key in TREE_ENV_KEYS):
+            if not all(context.get(key) for key in TREE_ENV_KEYS[:3]):
                 raise ValueError("Incomplete rollout tree run identity")
             self.archive = RolloutTreeArchive(
                 Path(context["TIR_ROLLOUT_TREE_DIR"]),
                 context["TIR_EXPERIMENT_ID"], context["TIR_RUN_ID"],
+                schema_version=int(context.get("TIR_EXECUTION_TREE_VERSION", "2")),
             )
         except (OSError, ValueError) as error:
             logger.error("RolloutTree initialization failed for run %s: %s", context.get("TIR_RUN_ID"), error)

@@ -21,6 +21,7 @@ from langgraph.graph.state import CompiledStateGraph
 from rl.hooks.arpo_rollout import (
     deserialize_messages,
     estimate_turn_entropy,
+    extract_token_logprobs,
     obs_hash,
     serialize_messages,
 )
@@ -28,6 +29,7 @@ from rl.rewards import compute_outcome_reward, extract_answer_text, has_answer_f
 from tools.langchain_tools import TOOL_MAP, TOOLS
 from workflow.llm_diagnostics import log_first_model_failure
 from workflow.agent_tracing import agent_node_name
+from workflow.execution_recording import ExecutionRecorder, message_content
 
 try:
     from workflow.env_load import load_repo_dotenv
@@ -313,6 +315,8 @@ def _parse_resume_messages(raw: Any) -> List[AnyMessage]:
 class TirAgent:
     """LangGraph ReAct TIR agent: search / wikipedia / python, then <answer> close-out."""
 
+    execution_recorder: Optional[ExecutionRecorder] = None
+
     def __init__(
         self,
         *,
@@ -330,7 +334,9 @@ class TirAgent:
         routers: Optional[Dict[str, Any]] = None,
         agent_id: str = "hub",
         api_key: Optional[str] = None,
+        execution_recorder: Optional[ExecutionRecorder] = None,
     ) -> None:
+        self.execution_recorder = execution_recorder
         self.max_turns = max_turns
         self.model_name = model_name
         self.endpoint = endpoint
@@ -506,6 +512,12 @@ class TirAgent:
             max_out = remaining_completion_tokens(
                 messages, max_model_len=int(self.max_model_len), max_tokens=max_out
             )
+        recorder = self.execution_recorder
+        node_id = recorder.begin(
+            self.agent_id, "agent", num_turns + 1, [message_content(m) for m in messages],
+            model=self.model_name, input_changed=messages != list(state["messages"]),
+        ) if recorder else None
+        failed = False
         try:
             response = llm.bind(max_tokens=max_out).invoke(messages)
         except Exception as e:
@@ -513,18 +525,34 @@ class TirAgent:
                 logger.warning("context window exceeded; retrying with truncated history: %s", e)
                 tight = max(256, int(self.max_model_len) // 2)
                 messages = fit_messages_for_context(messages, max_prompt_tokens=tight, tool_max_chars=200)
+                if recorder and node_id:
+                    recorder.request_error(node_id, e, retry_input=[message_content(m) for m in messages])
                 try:
                     response = llm.bind(max_tokens=64).invoke(messages)
                 except Exception as e2:
+                    failed = True
+                    if recorder and node_id:
+                        recorder.request_error(node_id, e2)
                     log_first_model_failure(e2, self.endpoint, self.model_name)
                     logger.error("LLM invoke failed after context retry: %s", e2)
                     response = AIMessage(content="<answer>None</answer>")
             else:
+                failed = True
+                if recorder and node_id:
+                    recorder.request_error(node_id, e)
                 log_first_model_failure(e, self.endpoint, self.model_name)
                 logger.error("LLM invoke failed: %s", e)
                 response = AIMessage(content="<answer>None</answer>")
 
         h = estimate_turn_entropy(response, max_tokens=self.entropy_tokens)
+        if recorder and node_id:
+            recorder.finish(
+                node_id, response.content, reasoning=message_content(response)["reasoning"],
+                tool_calls=response.tool_calls, failed=failed,
+                metrics={"usage": response.usage_metadata, "entropy": h,
+                         "entropy_source": "logprob_estimate" if extract_token_logprobs(
+                    response, self.entropy_tokens) else "heuristic"},
+            )
         h_root = float(state.get("h_root") or 0.0)
         h_tool = float(state.get("h_tool") or 0.0)
         last_entropy = float(state.get("last_entropy") or 0.0)
@@ -575,26 +603,45 @@ class TirAgent:
         n_search = int(state.get("n_search") or 0)
         n_python = int(state.get("n_python") or 0)
         tool_calls = getattr(last, "tool_calls", None) or []
+        recorder = self.execution_recorder
+        parents = list(recorder.trace.tail_ids) if recorder else []
+        node_ids = [
+            recorder.begin(str(call["name"]), "tool", int(state.get("num_turns") or 0),
+                           call.get("args", {}), parents=parents)
+            for call in tool_calls
+        ] if recorder else []
+        if recorder and node_ids:
+            recorder.join(node_ids)
 
-        def _one(call: Any):
+        def _one(indexed_call: tuple[int, Any]):
+            index, call = indexed_call
             name = call.get("name") if isinstance(call, dict) else getattr(call, "name", None)
             call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", "")
             args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
-            content = self.tool_agent_invoker.invoke(str(name or ""), args)
+            try:
+                content = self.tool_agent_invoker.invoke(str(name or ""), args)
+            except Exception as error:
+                if recorder:
+                    recorder.request_error(node_ids[index], error)
+                    recorder.finish(node_ids[index], None, failed=True)
+                raise
+            missing_tool = content is None
             if content is None:
                 content = f"Error: unknown tool {name}"
             content_s = clip_text(str(content), _TOOL_OBS_CHARS)
+            if recorder:
+                recorder.finish(node_ids[index], content, observation=content_s, failed=missing_tool)
             return ToolMessage(content=content_s, tool_call_id=call_id or name or "tool"), str(name or "unknown"), content_s
 
         results: List[Any] = []
         if len(tool_calls) <= 1:
-            results = [_one(c) for c in tool_calls]
+            results = [_one(c) for c in enumerate(tool_calls)]
         else:
             from concurrent.futures import ThreadPoolExecutor
 
             with ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
                 # map preserves input order
-                results = list(pool.map(_one, tool_calls))
+                results = list(pool.map(_one, enumerate(tool_calls)))
 
         for tm, tname, content_s in results:
             tool_messages.append(tm)
@@ -618,6 +665,8 @@ class TirAgent:
             branch = serialize_messages(new_messages)
         if tool_messages:
             event_id = uuid4().hex
+            if recorder:
+                recorder.window(event_id, messages=serialize_messages(new_messages))
             # schema 0.3 dual-write: generic agent window snapshot at the tool
             # boundary (post_first_tool default window; entropy still reads
             # branch_messages — risk R1 mitigation, P2 switches to events).
@@ -636,6 +685,8 @@ class TirAgent:
             _tool_name = str(results[0][1]) if len(results) == 1 else None
             _rid = self._router_by_tool.get(str(_tool_name)) if _tool_name else None
             _metrics: Dict[str, Any] = {"n_tools": len(tool_messages)}
+            if recorder:
+                _metrics.update(fork_node_ids=node_ids, source_attempt_id=recorder.trace.attempt_id)
             # W1: blank:<id> calls are blank-agent hops routed via tool_call —
             # record the prefixed tool_id and mark the agent kind.
             if _tool_name and str(_tool_name).startswith("blank:"):

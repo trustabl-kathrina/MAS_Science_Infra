@@ -357,7 +357,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
                 sample["action_key"] = plan_meta.get("action_key")
             if plan_meta.get("reward_scheme") is not None:
                 sample["reward_scheme"] = plan_meta.get("reward_scheme")
-            for field in ("window_id", "event_id", "snapshot_ref", "decision"):
+            for field in ("window_id", "event_id", "snapshot_ref", "decision", "fork_node_ids", "source_attempt_id"):
                 if plan_meta.get(field) is not None:
                     sample[field] = plan_meta[field]
             try:
@@ -511,7 +511,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
                         sample["action_key"] = plan_meta.get("action_key")
                     if plan_meta.get("reward_scheme") is not None:
                         sample["reward_scheme"] = plan_meta.get("reward_scheme")
-                    for field in ("window_id", "event_id", "snapshot_ref", "decision"):
+                    for field in ("window_id", "event_id", "snapshot_ref", "decision", "fork_node_ids", "source_attempt_id"):
                         if plan_meta.get(field) is not None:
                             sample[field] = plan_meta[field]
                     try:

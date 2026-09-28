@@ -15,6 +15,7 @@ from .archive import Archive, branch_point_to_resume_task_fields, register_archi
 from .compiler import compile_spec, next_agent
 from .contracts import BranchPoint, EventKind, ExecutionEvent, ExecutionFailure, MemoryItem, Trajectory
 from .llm_diagnostics import summarize_execution_error
+from .execution_recording import ExecutionRecorder
 from .memory import MemoryStore
 from .plugins import invoke_hub_skills, invoke_skill, REGISTRY
 from .rewards import has_answer_format
@@ -344,6 +345,7 @@ def run_episode(
     agent_id: str = "hub",
     tools_override: Optional[Sequence[str]] = None,
     system_prompt: Optional[str] = None,
+    execution_recorder: Optional[ExecutionRecorder] = None,
 ) -> EpisodeRaw:
     """Invoke TirAgent graph. Caller must supply a live endpoint."""
     spec = spec or load_spec()
@@ -391,6 +393,10 @@ def run_episode(
             agent_id=agent_id,
             api_key=llm.api_key,
         )
+    if execution_recorder:
+        agent.execution_recorder = execution_recorder
+        if resume_msgs:
+            execution_recorder.resume_applied(arpo.serialize_messages(resume_msgs))
     # agent-framework A1: test mode (llm.kind=api) may use epc_aw LLM-in-tool
     # backends for tool-agents declaring profile.llm_required; training/collect
     # keeps the pure mas/tools functions.
@@ -509,6 +515,8 @@ def run_episode(
                     },
                 )
                 event["snapshot_ref"] = f"{snapshot.archive_id}:{snapshot.snapshot_id}"
+                if execution_recorder:
+                    execution_recorder.window(event["event_id"], snapshot_ref=event["snapshot_ref"])
         _close_construct(archive, spec, memory, raw, task, agent_id=agent_id)
         return raw
     except Exception as e:
@@ -558,6 +566,9 @@ class MockRunner:
 
 
 class TirRunner:
+    def __init__(self, execution_recorder: Optional[ExecutionRecorder] = None):
+        self.execution_recorder = execution_recorder
+
     def run(
         self,
         task: Dict[str, Any],
@@ -578,6 +589,7 @@ class TirRunner:
             memory=memory,
             agent_id=agent_id,
             system_prompt=prompt,
+            execution_recorder=self.execution_recorder,
         )
 
 

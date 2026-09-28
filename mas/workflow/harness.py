@@ -243,6 +243,8 @@ class RewardHackingMonitor:
         if not nodes:
             return []
         version = tree.get("schema_version", 1) if isinstance(tree, dict) else getattr(tree, "schema_version", 1)
+        if version == 3:
+            raise ValueError("Execution-tree credit diagnostics require execution-level attribution")
         if version == 2:
             outcomes = tree.get("outcomes", {}) if isinstance(tree, dict) else tree.outcomes
             projected = []

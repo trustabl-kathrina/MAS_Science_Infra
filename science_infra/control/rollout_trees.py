@@ -62,8 +62,8 @@ def _tree(directory: Path, tree_id: str, experiment_id: str, run_id: str):
 
     try:
         tree = RolloutTree.model_validate(raw)
-        if (tree.schema_version, tree.experiment_id, tree.run_id, tree.tree_id) != (
-            2, experiment_id, run_id, tree_id
+        if tree.schema_version not in (2, 3) or (tree.experiment_id, tree.run_id, tree.tree_id) != (
+            experiment_id, run_id, tree_id
         ) or tree_id != stable_id(experiment_id, run_id, tree.mode, tree.group_id):
             raise ValueError("Tree identity does not match run")
         return tree
@@ -132,6 +132,7 @@ def tree_detail(
     cursor: str | None = None, limit: int = Query(100, ge=1, le=500),
     parent_id: str | None = None, plan_offset: int = Query(0, ge=0),
     diagnose: bool = False, reward_level: Literal["outcome", "credit"] = "outcome",
+    node_id: str | None = None,
 ):
     directory, run = _directory(experiment_id, run_id)
     tree = _tree(directory, tree_id, experiment_id, run_id)
@@ -146,36 +147,51 @@ def tree_detail(
     if parent_id is not None and parent_id not in by_id:
         raise HTTPException(404, "父节点不存在")
     candidates = [node for node in by_id.values() if node.kind != "query"
-                  and (parent_id is None or node.parent_id == parent_id)]
+                  and (parent_id is None or node.parent_id == parent_id or any(
+                      edge.source_node_id == parent_id and edge.target_node_id == node.node_id
+                      for edge in tree.edges))]
+    if node_id is not None:
+        positions = {node.node_id: index for index, node in enumerate(candidates)}
+        if node_id not in positions:
+            raise HTTPException(404, "执行节点不存在")
+        offset = positions[node_id] // limit * limit
     page = candidates[offset:offset + limit]
     visible = {node.node_id for node in tree.nodes if node.kind == "query"}
     for node in page:
-        current = node
-        while current.node_id not in visible:
-            visible.add(current.node_id)
+        for ancestor in tree.path_to_root(node.node_id):
+            visible.add(ancestor)
             if len(visible) > 2000:
                 raise HTTPException(413, "节点祖先范围过大，请按子树读取")
-            if current.parent_id not in by_id:
-                break
-            current = by_id[current.parent_id]
     public = tree.model_dump(mode="json")
     public["nodes"] = [node for node in public["nodes"] if node["node_id"] in visible]
     public["pending_nodes"] = [node for node in public["pending_nodes"] if node["node_id"] in visible]
-    public["outcomes"] = {key: result for key, result in public["outcomes"].items() if key in visible}
+    public["edges"] = [edge for edge in public["edges"]
+                       if edge["source_node_id"] in visible and edge["target_node_id"] in visible]
+    involved = {by_id[key].rollout_id for key in visible if key in by_id}
+    public["rollouts"] = [record for record in public["rollouts"] if record["node_id"] in involved
+                          or record["store_status"] not in ("succeeded", "failed", "cancelled")][:500]
+    result_ids = visible | {record["result_node_id"] for record in public["rollouts"]}
+    public["outcomes"] = {key: result for key, result in public["outcomes"].items() if key in result_ids}
     for node in [*public["nodes"], *public["pending_nodes"]]:
         if node["kind"] == "query":
             continue
         outcome = public["outcomes"].get(node["node_id"], {})
-        node["missing_result_fields"] = [key for key in ("answer", "reward") if outcome.get(key) is None]
+        node["missing_result_fields"] = [
+            key for key in ("answer", "reward") if outcome.get(key) is None
+        ] if node["kind"] in ("rollout", "outcome") else []
         node["terminal_unconfirmed"] = (
             run.get("state") in ("succeeded", "failed", "cancelled", "interrupted")
-            and node["store_status"] not in ("succeeded", "failed", "cancelled")
+            and (node["status"] if node["kind"] == "execution" else node["store_status"])
+            not in ("succeeded", "failed", "cancelled")
         )
     public["plans"] = public["plans"][plan_offset:plan_offset + limit]
     public["query_truncated"] = len(tree.query) > 4000
     public["query"] = tree.query[:4000]
     diagnostics = {"status": "not_requested", "items": []}
-    if diagnose:
+    if diagnose and tree.schema_version == 3:
+        diagnostics = {"status": "unsupported", "items": [],
+                       "reason": "执行节点的 credit 诊断尚未实现，不能套用旧 rollout 粒度"}
+    elif diagnose:
         from workflow.harness import RewardHackingMonitor
 
         findings = RewardHackingMonitor(reward_level=reward_level).check_tree(tree)
@@ -185,7 +201,7 @@ def tree_detail(
             "items": [finding.model_dump(mode="json") for finding in findings[:100]],
         }
     return _respond(request, {
-        "schema_version": 2, "experiment_id": experiment_id, "run_id": run_id,
+        "schema_version": tree.schema_version, "experiment_id": experiment_id, "run_id": run_id,
         "run_state": run.get("state"), "tree": public, "diagnostics": diagnostics,
         "page": {"offset": offset, "limit": limit, "total": len(candidates),
                  "next_cursor": f"{tree.revision}:{offset + limit}" if offset + limit < len(candidates) else None,
@@ -193,4 +209,32 @@ def tree_detail(
                  "parent_id": parent_id,
                  "plan_total": len(tree.plans),
                  "next_plan_offset": plan_offset + limit if plan_offset + limit < len(tree.plans) else None},
+    })
+
+
+@router.get("/{run_id}/rollout-trees/{tree_id}/nodes/{node_id}")
+def node_detail(request: Request, run_id: str, tree_id: str, node_id: str, experiment_id: str):
+    directory, run = _directory(experiment_id, run_id)
+    tree = _tree(directory, tree_id, experiment_id, run_id)
+    node = next((node for node in [*tree.nodes, *tree.pending_nodes] if node.node_id == node_id), None)
+    if node is None:
+        raise HTTPException(404, "节点不存在")
+    detail = None
+    if node.detail_ref:
+        from workflow.execution_recording import attempt_directory
+
+        expected = attempt_directory(directory, node.rollout_id, node.attempt_id) / f"{node.node_id}.json"
+        if not re.fullmatch(r"[a-f0-9]{32}", node.node_id) or (
+            directory / node.detail_ref
+        ).resolve() != expected.resolve():
+            raise HTTPException(500, "节点内容引用无效")
+        detail = _read_json(directory, node.detail_ref, 2 * 1024 * 1024)
+        if (detail.get("node_id"), detail.get("rollout_id"), detail.get("attempt_id")) != (
+            node.node_id, node.rollout_id, node.attempt_id
+        ):
+            raise HTTPException(500, "节点内容归属不一致")
+    return _respond(request, {
+        "experiment_id": experiment_id, "run_id": run_id, "tree_id": tree_id,
+        "run_state": run.get("state"), "node": node.model_dump(mode="json"),
+        "detail": detail, "outcome": tree.outcomes.get(node_id),
     })

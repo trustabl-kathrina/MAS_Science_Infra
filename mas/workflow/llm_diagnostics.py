@@ -26,7 +26,7 @@ def safe_url(value: str) -> str:
         return "<invalid-url>"
 
 
-def _summary(value: str, limit: int = 1000) -> str:
+def redact_text(value: str) -> str:
     for key, secret in os.environ.items():
         if secret and re.search(r"(?:^|_)(?:API_KEY|ACCESS_TOKEN|AUTH_TOKEN|TOKEN|SECRET|PASSWORD)$", key, re.I):
             value = value.replace(secret, "[redacted]")
@@ -37,7 +37,11 @@ def _summary(value: str, limit: int = 1000) -> str:
         r"\1[redacted]",
         value,
     )
-    return " ".join(value.split())[:limit]
+    return value
+
+
+def _summary(value: str, limit: int = 1000) -> str:
+    return " ".join(redact_text(value).split())[:limit]
 
 
 def summarize_execution_error(error: Exception, api_key: str | None = None) -> str:

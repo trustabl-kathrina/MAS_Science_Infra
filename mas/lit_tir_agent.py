@@ -20,6 +20,7 @@ from workflow.archive import dump_resume_with_archive, register_archive, Archive
 from workflow.collector import default_reward_fn
 from workflow.env_load import load_repo_dotenv
 from workflow.llm_diagnostics import log_model_route
+from workflow.execution_recording import ExecutionRecorder
 from workflow.memory import MemoryStore
 from workflow.runtime import LLMConfig, TirRunner, apply_verifier_feedback, episode_to_trajectory, run_episode
 from workflow.spec import load_spec
@@ -111,14 +112,16 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
         logger.info("[Rollout %s] source=%s q=%s", rollout_id, source, question[:180])
         arch = register_archive(Archive())
         mem = MemoryStore()
+        execution_recorder = ExecutionRecorder.from_task(task_run)
 
         expand = bool(task_run.get("expand_in_runner")) and int(task_run.get("sampling_budget") or 1) > 1
         branch_local_count = 0
         session_metrics: Dict[str, Any] = {}
 
         def _run_one(t: Dict[str, Any]):
-            raw_one = run_episode(t, cfg, arch, spec=self.spec, memory=mem)
-            return apply_verifier_feedback(t, raw_one, cfg, arch, self.spec, mem, TirRunner())
+            recorder = execution_recorder if t.get("_rollout_id") == rollout_id else None
+            raw_one = run_episode(t, cfg, arch, spec=self.spec, memory=mem, execution_recorder=recorder)
+            return apply_verifier_feedback(t, raw_one, cfg, arch, self.spec, mem, TirRunner(recorder))
 
         if expand:
             sites = None
@@ -154,7 +157,8 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
                     strategy=str(
                         task_run.get("sampling_strategy") or "configured_gate"
                     ),
-                )
+                ),
+                on_decision=execution_recorder.sampling if execution_recorder else None,
             )
             if ready_batch and local_expand and bool(task_run.get("use_scheduler", True)):
                 from workflow.active_set_scheduler import ActiveSetScheduler
@@ -295,6 +299,8 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
             )
         except Exception as e:
             logger.warning("[Rollout %s] emit_annotation failed: %s", rollout_id, e)
+        if execution_recorder:
+            execution_recorder.complete()
         return None
 
 

@@ -30,8 +30,10 @@ ContextFactory = Callable[[BranchSite, ResumableWindow], Dict[str, Any]]
 
 
 class SamplingCore:
-    def __init__(self, adapter: SamplingStrategyAdapter) -> None:
+    def __init__(self, adapter: SamplingStrategyAdapter, *,
+                 on_decision: Callable[[str, Dict[str, Any]], None] | None = None) -> None:
         self.adapter = adapter
+        self.on_decision = on_decision
         self._hits: Dict[str, int] = {}
 
     @staticmethod
@@ -83,6 +85,11 @@ class SamplingCore:
                     site,
                     context_factory(site, resolved),
                 )
+                if self.on_decision:
+                    self.on_decision(window.window_id, {
+                        **decision.model_dump(mode="json"), "gate": site.gate.type,
+                        "params": dict(site.gate.params),
+                    })
                 count = self.adapter.allocate(
                     decision,
                     remaining=budget,

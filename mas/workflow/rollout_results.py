@@ -72,7 +72,8 @@ def merge_observation(
     results: Sequence[RunnerResult] = (), reward: float | None = None,
     training_status: str | None = None,
 ) -> bool:
-    before = (node.model_dump_json(), json.dumps(tree.outcomes.get(node.node_id), sort_keys=True))
+    result_key = node.result_node_id or node.node_id
+    before = (node.model_dump_json(), json.dumps(tree.outcomes.get(result_key), sort_keys=True))
     if sequence < node.attempt_sequence:
         return False
     if sequence == node.attempt_sequence and node.attempt_id not in (None, attempt_id):
@@ -84,7 +85,7 @@ def merge_observation(
                 "attempt_id": node.attempt_id, "sequence": node.attempt_sequence,
                 "store_status": node.store_status, "execution_error": node.execution_error,
                 "training_status": node.training_status, "record_issues": list(node.record_issues),
-                "outcome": tree.outcomes.pop(node.node_id, None),
+                "outcome": tree.outcomes.pop(result_key, None),
                 "judgments": list(node.judgments), "credit": node.reward, "verdict": node.verdict,
             })
         node.record_issues = []
@@ -94,6 +95,11 @@ def merge_observation(
         node.store_status = node.attempt_status = None
         node.started_at = node.ended_at = None
     node.attempt_id, node.attempt_sequence = attempt_id, sequence
+    if tree.schema_version == 3 and attempt_id:
+        from .rollout_tree import stable_id
+
+        result_key = "outcome:" + stable_id(node.node_id, attempt_id)
+        node.result_node_id = result_key
     if store_status not in STATUS_ORDER:
         add_issue(node, f"Unrecognized Store status: {store_status}")
     elif STATUS_ORDER[store_status] >= STATUS_ORDER.get(node.store_status, -1):
@@ -107,7 +113,7 @@ def merge_observation(
                 node.started_at = started_at
             if ended_at is not None:
                 node.ended_at = ended_at
-    outcome = dict(tree.outcomes.get(node.node_id) or {})
+    outcome = dict(tree.outcomes.get(result_key) or {})
 
     def put(key: str, value: Any) -> None:
         if value is None:
@@ -135,7 +141,7 @@ def merge_observation(
         outcome["reward_source"] = "adapter_reward"
     if outcome:
         outcome["attempt_id"] = attempt_id
-        tree.outcomes[node.node_id] = outcome
+        tree.outcomes[result_key] = outcome
     node.execution_error = outcome.get("execution_error") or (
         node.attempt_status if node.attempt_status in ("timeout", "unresponsive", "failed") else None
     )
@@ -143,7 +149,7 @@ def merge_observation(
         node.status = "failed"
     if training_status and not (node.training_status == "accepted" and training_status == "adapted"):
         node.training_status = training_status
-    return before != (node.model_dump_json(), json.dumps(tree.outcomes.get(node.node_id), sort_keys=True))
+    return before != (node.model_dump_json(), json.dumps(tree.outcomes.get(result_key), sort_keys=True))
 
 
 def merge_judgments(node: RolloutTreeNode, judgments: list[dict[str, Any]], step: int) -> bool:

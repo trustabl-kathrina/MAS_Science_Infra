@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { parseRoute, routeHash, workspaceRoute } from '../../app/navigation';
 import { createTreeClient } from './api';
-import { answerState, forestPositions, mergeDetail, rewardText } from './model';
+import { answerState, candidateNodes, forestPositions, mergeDetail, rewardText, selectableId } from './model';
+import { ancestorPath, executionPositions } from './executionLayout';
 import type { TreeDetail, TreeNode } from './types';
 
 export const node = (id: string, extra: Partial<TreeNode> = {}): TreeNode => ({
@@ -27,7 +28,7 @@ describe('sample result model', () => {
       runId: 'abcdef123456', treeId: 'a'.repeat(32), nodeId: 'parent:child/1', view: 'branches' as const,
     } };
     expect(parseRoute(routeHash(route))).toEqual(route);
-    expect(parseRoute('#/experiments/exp/runs/abcdef123456/samples')).toMatchObject({ samples: { view: 'answers' } });
+    expect(parseRoute('#/experiments/exp/runs/abcdef123456/samples')).toMatchObject({ samples: { view: 'auto' } });
     expect(parseRoute('#/experiments/exp/runs/invalid/samples').kind).toBe('not-found');
     expect(parseRoute('#/experiments/exp/runs/abcdef123456/samples?answer=x').kind).toBe('not-found');
     expect(parseRoute('#/experiments/exp/runs/abcdef123456/samples?view=unknown').kind).toBe('not-found');
@@ -64,6 +65,63 @@ describe('sample result model', () => {
     expect(positions.get('b')!.x).toBe(positions.get('a')!.x);
     expect(forestPositions(nodes.map(n => ({ ...n, reward: 5 })))).toEqual(positions);
   });
+  it('lays out shared prefixes horizontally and highlights only inherited ancestors', () => {
+    const nodes = ['q', 'a1', 'tool', 'a2', 'ra', 'b1', 'rb', 'c1', 'rc'].map(id =>
+      node(id, { kind: id === 'q' ? 'query' : id.startsWith('r') ? 'outcome' : 'execution' }));
+    const edges = [
+      ['q', 'a1'], ['a1', 'tool'], ['tool', 'a2'], ['a2', 'ra'],
+      ['tool', 'b1'], ['b1', 'rb'], ['q', 'c1'], ['c1', 'rc'],
+    ].map(([source_node_id, target_node_id]) => ({
+      source_node_id, target_node_id, kind: target_node_id === 'b1' ? 'branch' as const : 'sequence' as const,
+    }));
+    const positions = executionPositions(nodes, edges);
+    expect(positions.size).toBe(nodes.length);
+    for (const edge of edges) expect(positions.get(edge.target_node_id)!.x).toBeGreaterThan(positions.get(edge.source_node_id)!.x);
+    expect(positions.get('a2')!.y).toBe(positions.get('a1')!.y);
+    expect(positions.get('b1')!.y).not.toBe(positions.get('a2')!.y);
+    expect(positions.get('c1')!.y).not.toBe(positions.get('a1')!.y);
+    expect(ancestorPath('rb', edges).nodes).toEqual(new Set(['rb', 'b1', 'tool', 'a1', 'q']));
+    expect(executionPositions(nodes.map(n => ({ ...n, status: 'running', reward: 10 })), edges, positions)).toEqual(positions);
+    const appended = executionPositions([...nodes, node('new', { kind: 'execution' })], [
+      ...edges, { source_node_id: 'tool', target_node_id: 'new', kind: 'branch' },
+    ], positions);
+    for (const [id, position] of positions) expect(appended.get(id)).toEqual(position);
+  });
+  it('uses all parallel edges for topological depth and rejoins the main lane', () => {
+    const nodes = ['q', 'a', 'tool1', 'tool2', 'tool2b', 'join'].map(id => node(id, {
+      kind: id === 'q' ? 'query' : 'execution', rollout_id: 'r',
+    }));
+    const edges = [['q', 'a'], ['a', 'tool1'], ['a', 'tool2'], ['tool2', 'tool2b'], ['tool1', 'join'], ['tool2b', 'join']]
+      .map(([source_node_id, target_node_id]) => ({ source_node_id, target_node_id, kind: 'sequence' as const }));
+    const positions = executionPositions(nodes, edges);
+    expect(positions.get('tool1')!.x).toBe(positions.get('tool2')!.x);
+    expect(positions.get('tool1')!.y).not.toBe(positions.get('tool2')!.y);
+    expect(positions.get('join')!.x).toBe(positions.get('tool2b')!.x + 300);
+    expect(positions.get('join')!.y).toBe(positions.get('a')!.y);
+    expect(ancestorPath('join', edges).nodes.size).toBe(6);
+  });
+  it('merges v3 edges and candidates without showing executions as answers', () => {
+    const first = detail();
+    first.tree.schema_version = 3;
+    first.tree.nodes = [node('execution', { kind: 'execution' })];
+    first.tree.rollouts = [node('rollout', { result_node_id: 'result' })];
+    first.tree.edges = [{ source_node_id: 'execution', target_node_id: 'result', kind: 'sequence' }];
+    const second = { ...first, tree: { ...first.tree,
+      nodes: [node('result', { kind: 'outcome', rollout_id: 'rollout' })],
+      outcomes: { result: { reward: 0 } },
+    } };
+    const merged = mergeDetail(first, second);
+    expect(merged.tree.edges).toHaveLength(1);
+    expect(merged.tree.nodes).toHaveLength(2);
+    expect(candidateNodes(merged.tree)).toEqual(first.tree.rollouts);
+    expect(merged.tree.outcomes.result.reward).toBe(0);
+  });
+  it('keeps pending candidates selectable without targeting a not-yet-created outcome', () => {
+    const pending = node('rollout', { status: 'running', store_status: 'running', result_node_id: 'result' });
+    expect(selectableId(pending)).toBe('rollout');
+    expect(selectableId({ ...pending, store_status: 'succeeded' })).toBe('result');
+    expect(selectableId(pending, [node('result', { kind: 'outcome' })])).toBe('result');
+  });
 });
 
 describe('conditional tree reads', () => {
@@ -84,5 +142,17 @@ describe('conditional tree reads', () => {
     const signal = new AbortController().signal;
     await expect(client.detail('a'.repeat(32), signal)).rejects.toThrow('不属于当前训练');
     await expect(client.detail('a'.repeat(32), signal, '1:100')).rejects.toMatchObject({ status: 409 });
+  });
+  it('reads an exact scoped node and refuses a different identity', async () => {
+    const payload = { experiment_id: 'exp', run_id: 'abcdef123456', tree_id: 'tree',
+      node: node('tool:1'), detail: { output: 'actual output' }, outcome: null };
+    const fetch = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(payload)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...payload, node: node('other') })));
+    vi.stubGlobal('fetch', fetch);
+    const client = createTreeClient('exp', 'abcdef123456');
+    const signal = new AbortController().signal;
+    expect((await client.node('tree', 'tool:1', signal)).detail?.output).toBe('actual output');
+    expect(fetch.mock.calls[0][0]).toContain('/tree/nodes/tool%3A1?experiment_id=exp');
+    await expect(client.node('tree', 'tool:1', signal)).rejects.toThrow('不属于当前执行节点');
   });
 });

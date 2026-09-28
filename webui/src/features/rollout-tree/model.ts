@@ -1,9 +1,21 @@
-import type { Outcome, TreeDetail, TreeNode } from './types';
+import type { Outcome, TreeDetail, TreeEdge, TreeNode } from './types';
 
 export const MAX_PAGES = 5;
 export const terminalRun = (state?: string) => ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(state || '');
 export const answerName = (id: string) => `回答 ${id.length > 14 ? `${id.slice(0, 6)}…${id.slice(-6)}` : id}`;
 export const rewardText = (value?: number | null) => value == null ? '—' : String(Number(value.toFixed(4)));
+export const resultId = (node: TreeNode) => node.result_node_id || node.node_id;
+export function selectableId(node: TreeNode, nodes: TreeNode[] = []) {
+  const resultExists = nodes.some(item => item.kind === 'outcome' && item.node_id === node.result_node_id);
+  return node.result_node_id && (resultExists || ['succeeded', 'failed', 'cancelled', 'interrupted'].includes(node.store_status || ''))
+    ? node.result_node_id : node.node_id;
+}
+export const executionName = (node: TreeNode) => `${node.agent_id || (node.agent_kind === 'tool' ? '工具' : 'Agent')}${node.turn != null ? ` · 第${node.turn}次执行` : ''}`;
+export const edgeId = (edge: TreeEdge) => JSON.stringify([edge.source_node_id, edge.target_node_id, edge.kind, edge.window_id, edge.snapshot_ref, edge.site_id]);
+export function candidateNodes(tree: TreeDetail['tree']) {
+  return tree.schema_version === 3 ? tree.rollouts || []
+    : [...tree.nodes, ...tree.pending_nodes].filter(node => node.kind === 'rollout');
+}
 export function answerState(node: TreeNode, outcome?: Outcome) {
   if (node.terminal_unconfirmed) return { label: '结果待确认', tone: 'warning' };
   if (node.execution_error === 'timeout') return { label: '执行超时', tone: 'danger' };
@@ -24,7 +36,8 @@ export function answerSource(node: TreeNode) {
   return '生成来源未记录';
 }
 export function mergeDetail(first: TreeDetail, next: TreeDetail): TreeDetail {
-  if (first.tree.tree_id !== next.tree.tree_id || first.tree.revision !== next.tree.revision) {
+  if (first.tree.tree_id !== next.tree.tree_id || first.tree.revision !== next.tree.revision
+    || (first.tree.schema_version || 2) !== (next.tree.schema_version || 2)) {
     throw new Error('不能合并不同题目或不同版本的记录。');
   }
   const merge = <T,>(a: T[], b: T[], key: (item: T) => string) => [...new Map([...a, ...b].map(item => [key(item), item])).values()];
@@ -33,8 +46,11 @@ export function mergeDetail(first: TreeDetail, next: TreeDetail): TreeDetail {
     tree: { ...next.tree,
       nodes: merge(first.tree.nodes, next.tree.nodes, n => n.node_id),
       pending_nodes: merge(first.tree.pending_nodes, next.tree.pending_nodes, n => n.node_id),
+      edges: merge(first.tree.edges || [], next.tree.edges || [], edgeId),
+      rollouts: merge(first.tree.rollouts || [], next.tree.rollouts || [], n => n.node_id),
       plans: merge(first.tree.plans, next.tree.plans, p => p.plan_id),
       outcomes: { ...first.tree.outcomes, ...next.tree.outcomes },
+      issues: [...new Set([...first.tree.issues, ...next.tree.issues])],
     },
   };
 }

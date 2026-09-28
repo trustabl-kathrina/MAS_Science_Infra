@@ -1,5 +1,5 @@
 import { ApiError, experimentQuery } from '../../shared/api/http';
-import type { TreeDetail, TreeList } from './types';
+import type { NodeDetail, TreeDetail, TreeList } from './types';
 
 // Scoped to one page session; no cross-experiment response cache.
 export function createTreeClient(experimentId: string, runId: string) {
@@ -29,11 +29,17 @@ export function createTreeClient(experimentId: string, runId: string) {
     return value;
   }
   return {
+    node: async (treeId: string, nodeId: string, signal: AbortSignal) => {
+      const result = await read<NodeDetail>(`${base}/${encodeURIComponent(treeId)}/nodes/${encodeURIComponent(nodeId)}?${experimentQuery(experimentId)}`, signal);
+      if (result.tree_id !== treeId || result.node.node_id !== nodeId) throw new Error('响应不属于当前执行节点。');
+      return result;
+    },
     list: (offset: number, mode: string, signal: AbortSignal) =>
       read<TreeList>(`${base}?${experimentQuery(experimentId)}&offset=${offset}&limit=20${mode ? `&mode=${mode}` : ''}`, signal),
-    detail: async (treeId: string, signal: AbortSignal, cursor?: string, planOffset = 0) => {
+    detail: async (treeId: string, signal: AbortSignal, cursor?: string, planOffset = 0, nodeId?: string) => {
       const params = new URLSearchParams({ experiment_id: experimentId, limit: '100', plan_offset: String(planOffset) });
       if (cursor) params.set('cursor', cursor);
+      if (nodeId) params.set('node_id', nodeId);
       const result = await read<TreeDetail>(`${base}/${encodeURIComponent(treeId)}?${params}`, signal);
       if (result.tree.tree_id !== treeId) throw new Error('响应不属于当前题目记录。');
       return result;

@@ -12,11 +12,12 @@ export const AnswerDetails = memo(function AnswerDetails({ node, outcome, unreso
   const root = useRef<HTMLElement>(null);
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, []);
   const state = answerState(node, outcome);
+  const title = answerName(node.rollout_id || node.node_id);
   return <aside ref={root} tabIndex={-1} className={`sample-details${expanded ? ' is-expanded' : ''}`}
-    aria-label={`${answerName(node.node_id)}详情`} onKeyDown={event => {
+    aria-label={`${title}详情`} onKeyDown={event => {
       if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
     }}>
-    <header><h3>{answerName(node.node_id)}</h3>
+    <header><h3>{title}</h3>
       <Button size="sm" variant="ghost" aria-label={expanded ? '恢复详情宽度' : '展开阅读'} onClick={() => setExpanded(value => !value)}>
         {expanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}</Button>
       <Button size="sm" variant="ghost" aria-label="关闭回答详情" onClick={onClose}><X size={16} /></Button></header>
@@ -51,7 +52,7 @@ export const AnswerDetails = memo(function AnswerDetails({ node, outcome, unreso
       </details>
       <details><summary>技术详情</summary>
         <dl>{Object.entries({
-          'Rollout ID': node.node_id, 'Parent ID': node.parent_id,
+          'Rollout ID': node.rollout_id || node.node_id, 'Parent ID': node.parent_id,
           'Attempt': node.attempt_id, '尝试序号': node.attempt_sequence || '未记录',
           'Store 状态': node.store_status, '执行状态': node.status,
           '窗口': node.window_id, '事件': node.event_id, '快照引用': node.boundary_snapshot_ref,

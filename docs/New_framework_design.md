@@ -14,7 +14,7 @@
 
 1. **一切皆 agent（带工作窗口）** —— 统一通信与训练单元；
 2. **branch = 工作窗口边界 + 指标 gate** —— 对现有 `sampling.sites` 的语义正名而非推翻；
-3. **RolloutTree 为一等跨层合同** —— 让两级 reward、实时 Harness、树可视化三个欠账有共同地基。
+3. **RolloutTree 为核心跨层数据结构** —— 让两级 reward、实时 Harness、树可视化使用相同的数据基础。
 
 ```mermaid
 flowchart TB
@@ -25,7 +25,7 @@ flowchart TB
     PA --> WE
     BA --> WE["工作窗口: 执行 → emit WINDOW_END + 快照"]
   end
-  WE --> TREE["RolloutTree 合同: query=root, 叶=outcome, 节点带metrics"]
+  WE --> TREE["RolloutTree 结构: query=root, 叶=outcome, 节点为一次实际执行"]
   TREE --> RL["RL层: rollout级outcome + 节点级credit"]
   TREE --> HAR["Harness: 测试态错误归因 / 训练态reward hacking"]
   RL -->|"累计 <rollout, reward, loss>"| HAR
@@ -114,7 +114,7 @@ Planner 输出 → agent 路由 → 从 tool-agent 集合选一个 → 执行 �
 | `after_tool`       | tool-agent 工作窗口结束（agent 化后与上一行完全同构） |
 | `after_verifier`   | verifier-agent 工作窗口结束               |
 | `on_edge`          | 窗口间路由边界                             |
-| `on_token`         | 窗口内更细粒度（暂不做，现状也是合同级降级）              |
+| `on_token`         | 窗口内更细粒度（暂不做，目前仅有结构声明）              |
 
 
 执行形态取舍判断链（原文）：
@@ -125,16 +125,24 @@ Planner 输出 → agent 路由 → 从 tool-agent 集合选一个 → 执行 �
 
 
 
-### 1.4 MAS→RL 合同：RolloutTree
+### 1.4 MAS→RL 数据结构：RolloutTree
 
 原文**最具新增价值**的部分：
 
 ```
 每个 query = 树的 root
+普通节点 = 某个 Agent / Tool-agent 的一次实际执行
+initial rollout = 从 root 开始的一条独立执行路径
 branch rollout = 树上分支路径
 叶子 = outcome（root→leaf 完整执行路径的最终输出）
 节点携带状态（熵、是否执行成功）
 ```
+
+同一个 Agent 被执行多次，会产生多个节点；rollout 是路径而不是普通节点。UI 对一道题的所有采样从左到右展示，不同 initial rollout 上下分行，child 从已执行节点后的真实恢复位置接出，共享前缀只画一次。
+
+分支点是某次执行结束后的 Window/Snapshot，作为节点出口和连线信息即可，不要求新增技术节点。节点详情应能读取实际输入、模型返回的推理/普通输出以及工具交互，不能只有最终奖励。
+
+以下“现状”描述保留早期设计背景，当前完善范围以 §2.0.2 及新的五阶段方案为准。
 
 现状是**隐式、散装**的：`parent_id`/`depth`/`role` 散在 `ForkPlan.meta` 与 Daemon `non_tensor`（`role`/`resume_boundary`/`verdict_list`）里；`.local_expansion/*.json` 是平铺 plan 列表；RAE 的 `apply_dead_end_backprop_verdicts` 在算树形 credit，但"树"从未显式建模。
 
@@ -164,7 +172,7 @@ branch rollout = 树上分支路径
 - **训练态**：作用于 RL——监控 reward hacking（看 rollout tree 节点状态）、loss 等；
 - **数据通道**：RL 层实时向 Harness 传输累计 `<rollout, reward, loss>`。
 
-现状缺口最大的一层：`log_error` / `loss_volatility` 是离线扫描；"实时"要求把拉模式改为事件流，依赖 §1.4 树合同先行。
+现状缺口最大的一层：`log_error` / `loss_volatility` 是离线扫描；"实时"要求把拉模式改为事件流，依赖 §1.4 树数据结构先明确。
 
 ### 1.7 现状差距总表
 
@@ -176,10 +184,10 @@ branch rollout = 树上分支路径
 | agent 路由器         | ❌ 无（hub `react_loop` 隐式路由）    | 新原语：路由节点 spec + 运行时选择                                     |
 | 两层 memory         | 🟡 字段已有语义未展开                  | 文档化 + agent profile 扩展                                    |
 | branch = 工作窗口     | 🟡 五种 anchor.kind 已覆盖         | 语义收敛 + `after_tool` 同构化                                   |
-| RolloutTree 合同    | ❌ 隐式                          | 新 Pydantic 合同 + expansion 升级 + Daemon 写树                  |
+| RolloutTree 数据结构 | ❌ 隐式                          | 新 Pydantic 结构 + expansion 升级 + Daemon 写树                  |
 | 两级 reward         | 🟡 outcome ✅ + RAE verdict 半个 | 节点级 credit 泛化、k-hop 累积                                    |
-| Harness 双态实时      | ❌ 离线批处理                       | 事件流通道（依赖树合同）                                              |
-| rollout tree 可视化  | ❌ 无                           | UI 新页（依赖树合同）                                              |
+| Harness 双态实时      | ❌ 离线批处理                       | 事件流通道（依赖树结构）                                              |
+| rollout tree 可视化  | ❌ 无                           | UI 新页（依赖树结构）                                              |
 
 
 ---
@@ -192,22 +200,22 @@ branch rollout = 树上分支路径
 
 ### 2.0 总原则
 
-1. **层独立不破坏**：`mas/workflow/` 依旧禁止 import AGL/VERL/Ray；Harness 只读合同；RL 消费 `TrainSignal`/`RolloutTree`。
-2. **合同先行**：先冻结 `RolloutTree` + `WINDOW_END` 事件两个 Pydantic 合同，其余一切挂靠其上。
+1. **层独立不破坏**：`mas/workflow/` 依旧禁止 import AGL/VERL/Ray；Harness 只读共享数据；RL 消费 `TrainSignal`/`RolloutTree`。
+2. **数据结构先行**：先明确 `RolloutTree` + `WINDOW_END` 事件的 Pydantic 结构，再接入执行记录与 UI。
 3. **糖而非删**：旧 `tools:` 字段、`after_tool` anchor、平铺 expansion 读法全部保留为向后兼容糖，编译/读取期映射到新模型。
 4. **AGL 黑盒不动**：训练侧仍走 `TirAgentModeDaemon` 子类 + Store enqueue；窗口快照与续跑仍用可恢复 messages。
 
-### 2.0.1 目标合同与当前实现边界
+### 2.0.1 目标结构与当前实现边界
 
 本节以后描述的是**目标模型**，不能仅凭 Pydantic 字段或 UI 候选存在就宣称运行时已经实现。当前最准确的状态是：
 
 ```text
-通用 Sampling 合同与部分执行骨架
+通用 Sampling 数据结构与部分执行骨架
         +
 ARPO Tool Result Window 纵向切片
 ```
 
-| 能力 | 目标合同 | 当前实现 |
+| 能力 | 目标结构 | 当前实现 |
 | --- | --- | --- |
 | Tool Result Window | Tool-agent 工作窗口的一种 | 已有 messages Snapshot、entropy Gate 和 ARPO 二波 enqueue；待正式 Adapter 收口与服务器验收 |
 | 普通 Agent Window | `agent_complete` | 未实现；旧 `after_agent_turn(hub)` 仅为 Tool Event 兼容输入 |
@@ -215,7 +223,7 @@ ARPO Tool Result Window 纵向切片
 | Verifier Window | `verification_complete` | Gate/credit 部分存在，没有完整 Window/Snapshot/Resume 闭环 |
 | Edge Window | `on_edge` selector | 目前主要是声明 |
 | Token Window | window 内细粒度前缀 | 当前 messages 执行路径不支持 |
-| RolloutTree | run 级事实投影 | 基础合同与计划树存在，run 隔离和完整 outcome 回填未完成 |
+| RolloutTree | run 级执行记录 | 基础结构与计划树存在，run 隔离和完整 outcome 回填未完成 |
 
 Sampling 后续实施不再把所有目标 Window 同时开放，而采用：
 
@@ -228,11 +236,27 @@ Sampling Core
 
 当前权威实施路线见 [Sampling 框架实施总览](../webui/plan/Sampling框架实施总览.md)：
 
-1. [S0 窗口合同与适配器核心](../webui/plan/Sampling框架第一阶段-窗口合同与适配器核心.md)
+1. [S0 窗口结构与适配器核心](../webui/plan/Sampling框架第一阶段-窗口合同与适配器核心.md)
 2. [S1 ARPO Tool Result Window 适配](../webui/plan/Sampling框架第二阶段-ARPO工具窗口适配.md)
 3. [S2 适配器驱动画布交互](../webui/plan/Sampling框架第三阶段-适配器驱动画布交互.md)
 
 本轮到 ARPO 为止。AEPO、RAE、IGPO、GIGPO 作为后续独立 Adapter 实施；Rollout Tree 在 ARPO 纵向闭环之后建设。
+
+### 2.0.2 RolloutTree 执行树后续裁决（2026-09-28）
+
+§2.0.1 的现状表是早期范围记录。当前已有 run 隔离、结果回填和回答来源图，服务器也已有真实训练更新证据；但它们不等于逐 Agent 执行树，且本次服务器运行实际分支数为 0。
+
+后续以精简后的 [RolloutTree 执行树实施总览](../webui/plan/RolloutTree执行树实施总览.md) 为实施依据：
+
+- 普通过程节点是一次 Agent/Tool-agent 执行；rollout 是路径，不能用整条回答充当过程节点。
+- 一道题的所有初始采样在一张横向树上分行展示，真实分支从指定节点出口接出，各自到达结束结果。
+- 继续扩展 `RolloutTree`：新记录使用 v3 的执行节点与连线，旧 v2 记录按原格式只读。不另建 ExecutionGraph 产品或要求新 run 双写两份树。
+- child 引用来源 attempt 的真实 Window/Snapshot，只增加新后缀；不重复前缀，也不连接到父最终答案之后。
+- 节点详情记录实际输入、模型返回的推理/普通输出和工具交互；未返回的内容不补写。
+- 不建立独立采样审计体系；只在实际评估过的节点附带已有门控结果。没走到分支点不等于未过阈值，真正异常沿用日志和错误提示。
+- 复用 Archive、Recorder、现有只读 API 与 React Flow，按“结构、记录、组装、UI、运行验收”五步实施。
+
+这轮完善不自动启用普通 Agent、Router、Verifier 等尚未具备完整恢复能力的分支，也不把 rollout reward 当作每个执行节点的 credit。
 
 
 
@@ -307,37 +331,49 @@ class WindowEndEvent(BaseModel):
 
 
 
-### 2.4 RolloutTree 合同（P0 核心）
+### 2.4 RolloutTree 数据结构
 
-新 Pydantic（[mas/workflow/contracts.py](../mas/workflow/contracts.py)）：
+目标结构如下，尚待实施；详细字段见 [第一阶段：节点与数据结构](../webui/plan/RolloutTree执行树第一阶段-节点与数据结构.md)。旧版使用 rollout ID 作为普通节点的示例不再用于新执行树。
 
 ```python
 class RolloutTreeNode(BaseModel):
-    node_id: str                           # rollout_id 或合成 id
-    parent_id: Optional[str]               # None = root（query 级）
-    depth: int = 0
-    role: str = "root"                    # root | child | probe
-    agent_path: List[str]                 # root→该节点经过的 agent 序列
-    boundary_snapshot_ref: Optional[str]   # 窗口快照 → Archive
-    metrics: Dict[str, Any]               # {h_root, h_tool, consecutive_high, event_kind, ...}
-    reward: Optional[float] = None        # 节点级 credit（§2.5）
-    verdict: Optional[str] = None         # RAE validate/invalidate/abstain
+    node_id: str                           # 一次执行或根/结束节点的独立 ID
+    kind: Literal["query", "execution", "outcome"]
+    rollout_id: Optional[str] = None
+    attempt_id: Optional[str] = None
+    agent_id: Optional[str] = None         # 对应业务 Agent，不是节点唯一 ID
+    turn: Optional[int] = None
+    status: Optional[str] = None
+    summary: Optional[str] = None
+    detail_ref: Optional[str] = None       # 实际输入、输出、推理与工具内容
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    reward: Optional[float] = None         # 已计算的节点 credit，不是最终奖励
+    verdict: Optional[str] = None
+
+class RolloutTreeEdge(BaseModel):
+    source_node_id: str
+    target_node_id: str
+    kind: Literal["sequence", "branch"]
+    window_id: Optional[str] = None
+    snapshot_ref: Optional[str] = None
 
 class RolloutTree(BaseModel):
-    tree_id: str                           # data_id + group
+    schema_version: Literal[3] = 3
+    tree_id: str                           # experiment/run/mode/采样组
     query: str
     nodes: List[RolloutTreeNode]
-    outcomes: Dict[str, Any]              # leaf_id → 最终输出/reward
-
-    def leaves(self) -> List[str]: ...
-    def path_to_root(self, node_id: str) -> List[str]: ...
+    edges: List[RolloutTreeEdge]
+    rollouts: List[Dict[str, Any]]         # 路径归属、来源 attempt、分支点与结果引用
+    outcomes: Dict[str, Any]               # 结束节点 ID → 已有最终结果
+    revision: int = 0
 ```
 
 写入点与兼容：
 
-- `Daemon._enqueue_from_runner_expansions`（[rl/hooks/daemon.py](../rl/hooks/daemon.py)）materialize plan 时**同时写树**（吸收现散在 `ForkPlan.meta` 与 `non_tensor` 的 `role`/`resume_boundary`/`verdict_list` 字段）；
-- `mas/.local_expansion/*.json` 升级为 `{tree: RolloutTree, plans: [...]}`，旧平铺读法（`branch_rollout_ui_test.py` 的 `scan_expansions`）向后兼容；
-- Collect 产出的就是**单链树**（root→唯一 leaf），Collect/Train 假绿问题被结构性缓解。
+- Runner 在实际 Agent/Tool 调用处记录节点及内容；Daemon 复用现有 Recorder 合并真实执行顺序、child 来源和最终结果。
+- child 首节点从产生恢复快照的位置接出。原路径继续保留自己的结束节点，公共前缀只存一份。
+- 新树按 run 保存；已有 `.local_expansion` 继续用于训练计划，不把其旧计划树误当完整执行树。
+- 旧 v2 只读兼容，不从旧答案补造执行过程；单次独立 Collect 可以表示为一条路径，但不等于发生了分支。
 
 
 
@@ -377,7 +413,7 @@ class RolloutTreeEvent(BaseModel):
 
 - **测试态（作用于 MAS）**：实时接收 rollout → 错误归因。现 `HARNESS.diagnose`（拉模式、事后批处理）改为**订阅推模式**；`log_error` 类 Diagnoser 逐节点消费而非扫描全量；
 - **训练态（作用于 RL）**：监控 reward hacking——看树上节点 metrics 序列（如某节点 reward 持续高于同层兄弟而 outcome 不变）；`loss_volatility` 消费 RL 层实时回传的累计 `<rollout, reward, loss>`；
-- 层独立保持：Harness 只依赖 `RolloutTree(Event)` 合同，**不 import TirAgent**。
+- 层独立保持：Harness 只依赖 `RolloutTree(Event)` 数据结构，**不 import TirAgent**。
 
 
 
@@ -399,7 +435,7 @@ class RolloutTreeEvent(BaseModel):
 
 ```mermaid
 flowchart LR
-  P0["P0 树合同 增量"] --> P1["P1 tool agent 化 破坏性"]
+  P0["P0 树结构 增量"] --> P1["P1 tool agent 化 破坏性"]
   P1 --> P2["P2 窗口事件 + 两级 reward"]
   P2 --> P3["P3 实时 Harness"]
   P0 --> P3
@@ -409,7 +445,7 @@ flowchart LR
 
 依赖逻辑：P0 是根（reward/Harness/可视化都挂树上）；P1 与 P0 并行可开（spec/compiler 独立）；P2 依赖 P1 的窗口语义；P3 只依赖 P0。
 
-### 3.1 P0 — RolloutTree 合同（增量，先做）
+### 3.1 P0 — RolloutTree 结构（增量，先做）
 
 
 | 文件                                                          | 改动                                                                                                                 | 破坏性                                      |
@@ -503,8 +539,8 @@ flowchart LR
 
 ## 4. 结论
 
-`new_framework.md` 的本质是**把现有仓库三条成熟度不同的线（EPC-AW agent 化、BranchSite 采样、RAE 树形 credit）统一进"一切皆带工作窗口的 agent"心智模型**。最优架构 = 现有四层不动 + 三个新合同（`AgentNodeSpec(kind)`/`RouterSpec`、`WindowEndEvent`、`RolloutTree`）+ 一个降级（`BranchSiteReward` → 节点默认策略）。
+`new_framework.md` 的本质是**把现有仓库三条成熟度不同的线（EPC-AW agent 化、BranchSite 采样、RAE 树形 credit）统一进"一切皆带工作窗口的 agent"心智模型**。最优架构 = 现有四层不动 + 三组数据结构（`AgentNodeSpec(kind)`/`RouterSpec`、`WindowEndEvent`、`RolloutTree`）+ 一个降级（`BranchSiteReward` → 节点默认策略）。
 
-迁移路径对现有代码最友好：**P0 纯增量（树合同）→ P1 破坏性收敛（tool agent 化，糖保兼容）→ P2 语义升级（事件匹配 + 两级 reward）→ P3 实时化（Harness 双态）**。P0/P1 可并行启动；全部完成后，[ROLLOUT_SAMPLING_UI_TEST.md](./ROLLOUT_SAMPLING_UI_TEST.md) 标注的"自匹配 vs 真实事件"旧债与 Collect/Train 假绿问题被结构性消除。
+迁移路径对现有代码最友好：**P0 纯增量（树结构）→ P1 破坏性收敛（tool agent 化，糖保兼容）→ P2 语义升级（事件匹配 + 两级 reward）→ P3 实时化（Harness 双态）**。P0/P1 可并行启动；全部完成后，[ROLLOUT_SAMPLING_UI_TEST.md](./ROLLOUT_SAMPLING_UI_TEST.md) 标注的"自匹配 vs 真实事件"旧债与 Collect/Train 假绿问题被结构性消除。
 
 > **函数级实施方案**（插入点、代码骨架、测试与验收命令）见 [NEW_FRAMEWORK_MIGRATION_PLAN.md](./NEW_FRAMEWORK_MIGRATION_PLAN.md)。

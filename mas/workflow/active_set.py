@@ -110,11 +110,12 @@ class ActiveSetConfig:
 class ActiveSetSession:
     """ARPO/RAE-like active-set controller at the episode / messages barrier."""
 
-    def __init__(self, config: ActiveSetConfig, *, rng: Any = None) -> None:
+    def __init__(self, config: ActiveSetConfig, *, rng: Any = None,
+                 on_decision: Optional[Callable[[str, Dict[str, Any]], None]] = None) -> None:
         self.config = config
         self._rng = rng
         self._probe_metrics: Dict[str, Any] = {}
-        self._core = SamplingCore(sampling_adapters.resolve(config.strategy))
+        self._core = SamplingCore(sampling_adapters.resolve(config.strategy), on_decision=on_decision)
 
     def _sites(self) -> List[BranchSite]:
         return resolve_configured_sites(self.config.sites, self.config)
@@ -288,6 +289,8 @@ class ActiveSetSession:
                 "window_id": window.window_id,
                 "event_id": window.window_id,
                 "snapshot_ref": window.snapshot_ref,
+                "fork_node_ids": list(window.metrics.get("fork_node_ids") or []),
+                "source_attempt_id": window.metrics.get("source_attempt_id"),
                 "decision": decision.model_dump(mode="json"),
                 "reward_scheme": site.reward.scheme,
                 "share_observation": site.fork.share_observation,

@@ -750,7 +750,7 @@ def _launch_training(
         "group_n": plan.group_n,
         "active_agents": plan.active_agents,
         "rollout_tree": {
-            "schema_version": 2, "store_mode": "v1",
+            "schema_version": 3, "store_mode": "v1",
             "directory": str(run_dir / "rollout-trees"),
         },
         "snapshot": {
@@ -772,6 +772,7 @@ def _launch_training(
             TIR_EXPERIMENT_ID=exp_id,
             TIR_RUN_ID=run_id,
             TIR_ROLLOUT_TREE_DIR=str(run_dir / "rollout-trees"),
+            TIR_EXECUTION_TREE_VERSION="3",
         )
         _write_yaml(rl_path, plan.rl)
         _write_yaml(workflow_path, plan.bundle["workflow"])

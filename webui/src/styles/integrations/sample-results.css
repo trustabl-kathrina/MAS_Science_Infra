@@ -85,6 +85,10 @@
 .sample-graph-note { position: absolute; top: 8px; left: 16px; z-index: 5; color: var(--text-secondary); font-size: 11px; pointer-events: none; }
 .sample-graph-node { display: grid; gap: 6px; width: 218px; padding: 12px; border-radius: 8px; border: 1px solid var(--border-control); background: var(--surface); font-size: 11px; }
 .sample-graph-node.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sample-graph-node.is-path { border-color: var(--accent); }
+.sample-node-summary { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sample-saved-items > div + div { border-top: 1px solid var(--border-subtle); padding-top: 8px; }
+.sample-details pre.sample-saved-text { font-size: 12px; line-height: 1.7; }
 .sample-graph-node strong { font-size: 12px; }
 .sample-graph-node button { text-align: left; font-size: 12px; font-weight: 600; padding: 0; background: none; border: 0; color: var(--text-primary); cursor: pointer; }
 .sample-graph-node small { color: var(--text-secondary); }

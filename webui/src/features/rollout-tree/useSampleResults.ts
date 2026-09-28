@@ -3,7 +3,7 @@ import { ApiError } from '../../shared/api/http';
 import { usePollingResource } from '../../shared/hooks/usePollingResource';
 import { runtimeApi } from '../runtime/api';
 import { createTreeClient } from './api';
-import { MAX_PAGES, mergeDetail, terminalRun } from './model';
+import { MAX_PAGES, mergeDetail, resultId, selectableId, terminalRun } from './model';
 import type { TreeDetail } from './types';
 
 function useVisible(active: boolean) {
@@ -49,8 +49,17 @@ export function useSampleResults(experimentId: string, runId: string, treeId: st
         const key = JSON.stringify([experimentId, runId, treeId, cursor, pages, planPages, nodeId]);
         if (assembled.current?.key === key && assembled.current.revision === detail.tree.revision
           && assembled.current.data.run_state === detail.run_state) return assembled.current.data;
+        const rollout = detail.tree.rollouts?.find(node => node.node_id === nodeId || resultId(node) === nodeId);
+        const rolloutTarget = rollout && selectableId(rollout, detail.tree.nodes);
+        const targetId = rollout ? rolloutTarget !== rollout.node_id ? rolloutTarget : undefined : nodeId;
+        if (detail.tree.schema_version === 3 && targetId && !detail.tree.nodes.some(node => node.node_id === targetId)) {
+          const located = await client.detail(treeId, signal, undefined, 0, targetId);
+          if (located.tree.revision !== detail.tree.revision) throw new ApiError('定位节点时树已更新，请重试。', 409);
+          detail = mergeDetail(detail, located);
+        }
         for (let page = 1; page < MAX_PAGES; page++) {
-          const wanted = nodeId && ![...detail.tree.nodes, ...detail.tree.pending_nodes].some(n => n.node_id === nodeId);
+          const wanted = detail.tree.schema_version !== 3 && nodeId
+            && ![...detail.tree.nodes, ...detail.tree.pending_nodes].some(n => n.node_id === nodeId);
           const moreNodes = (page < pages || wanted) && detail.page.next_cursor;
           const morePlans = page < planPages && detail.page.next_plan_offset !== null;
           if (!moreNodes && !morePlans) break;
@@ -70,8 +79,14 @@ export function useSampleResults(experimentId: string, runId: string, treeId: st
       }
     }
   }, [client, experimentId, runId, treeId, nodeId, pages, planPages, cursor]);
-  const detail = usePollingResource(`sample-tree:${experimentId}:${runId}:${treeId || ''}:${cursor || ''}`, detailLoad, interval, enabled && !!treeId);
+  const detail = usePollingResource(`sample-tree:${experimentId}:${runId}:${treeId || ''}:${cursor || ''}`,
+    detailLoad, interval, enabled && !!treeId);
   useEffect(() => { if (treeId && enabled) void detail.refresh(); }, [treeId, nodeId, pages, planPages, enabled, detail.refresh]);
+  const candidate = detail.data?.tree.rollouts?.find(node => node.node_id === nodeId || resultId(node) === nodeId);
+  const exactId = candidate ? selectableId(candidate, detail.data?.tree.nodes) : nodeId;
+  const nodeLoad = useCallback((signal: AbortSignal) => client.node(treeId!, exactId!, signal), [client, treeId, exactId]);
+  const nodeDetail = usePollingResource(`sample-node:${experimentId}:${runId}:${treeId || ''}:${exactId || ''}`, nodeLoad, interval,
+    enabled && !!treeId && !!exactId && detail.data?.tree.schema_version === 3 && (!candidate || exactId !== candidate.node_id));
   const loadMore = useCallback((plans = false) => setExtent({
     treeId, pages: Math.min(MAX_PAGES, pages + (plans ? 0 : 1)),
     planPages: Math.min(MAX_PAGES, planPages + (plans ? 1 : 0)), cursor,
@@ -87,8 +102,8 @@ export function useSampleResults(experimentId: string, runId: string, treeId: st
     void detail.refresh();
   }, [treeId, detail.refresh]);
   const filter = useCallback((next: string) => { setMode(next); setOffset(0); }, []);
-  const refresh = useCallback(() => { void run.refresh(); void list.refresh(); if (treeId) void detail.refresh(); },
-    [run.refresh, list.refresh, detail.refresh, treeId]);
-  return { run, list, detail, enabled, offset, setOffset, mode, filter, refresh, loadMore,
+  const refresh = useCallback(() => { void run.refresh(); void list.refresh(); if (treeId) void detail.refresh(); if (exactId) void nodeDetail.refresh(); },
+    [run.refresh, list.refresh, detail.refresh, nodeDetail.refresh, treeId, exactId]);
+  return { run, list, detail, nodeDetail, enabled, offset, setOffset, mode, filter, refresh, loadMore,
     pages, planPages, cursor, nextWindow, resetWindow };
 }

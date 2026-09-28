@@ -9,10 +9,13 @@ import { SampleHeader } from './SampleHeader';
 import { SampleState } from './SampleState';
 import { AnswerDetails } from './AnswerDetails';
 import { AnswerList } from './AnswerList';
-import { MAX_PAGES } from './model';
+import { ExecutionDetails } from './ExecutionDetails';
+import { candidateNodes, MAX_PAGES, resultId, selectableId } from './model';
 import { useSampleResults } from './useSampleResults';
 
 const BranchGraph = lazy(() => import('./BranchGraph'));
+const ExecutionGraph = lazy(() => import('./ExecutionGraph'));
+const NO_EDGES: NonNullable<import('./types').TreeDetail['tree']['edges']> = [];
 
 export const SampleResults = memo(function SampleResults({ experimentId, selection, active, onNavigate, onHistory }: {
   experimentId: string; selection: SampleSelection; active: boolean;
@@ -42,14 +45,27 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
     if (active && !selection.treeId && state.list.data?.items[0]) selectTree(state.list.data.items[0].tree_id);
   }, [active, selection.treeId, state.list.data, selectTree]);
   const data = state.detail.data;
-  const nodes = useMemo(() => data ? [...data.tree.nodes, ...data.tree.pending_nodes].filter(n => n.kind !== 'query') : [], [data?.tree.nodes, data?.tree.pending_nodes]);
-  const chosen = useMemo(() => nodes.find(node => node.node_id === selection.nodeId), [nodes, selection.nodeId]);
+  const isExecutionTree = data?.tree.schema_version === 3;
+  const nodes = useMemo(() => data ? candidateNodes(data.tree) : [], [data?.tree]);
+  const candidate = nodes.find(node => node.node_id === selection.nodeId || resultId(node) === selection.nodeId);
+  const selectedId = candidate ? selectableId(candidate, data?.tree.nodes) : selection.nodeId;
+  const exact = state.nodeDetail?.data;
+  const chosen = exact && exact.node.node_id === selectedId ? exact.node
+    : data?.tree.nodes.find(node => node.node_id === selectedId) || candidate;
+  const chosenOutcome = exact && exact.node.node_id === selectedId ? exact.outcome || undefined : data?.tree.outcomes[selectedId || ''];
+  const automaticView = useRef<{ run: string; view: 'answers' | 'branches' }>();
+  const runKey = `${experimentId}:${selection.runId}`;
+  const defaultView = automaticView.current?.run === runKey ? automaticView.current.view : isExecutionTree ? 'branches' : 'answers';
+  useEffect(() => {
+    if (data && automaticView.current?.run !== runKey) automaticView.current = { run: runKey, view: isExecutionTree ? 'branches' : 'answers' };
+  }, [data, runKey, isExecutionTree]);
+  const view = selection.view === 'auto' ? defaultView : selection.view;
   const summary = state.list.data?.items.find(item => item.tree_id === selection.treeId);
   const [graphTree, setGraphTree] = useState<string>();
   useEffect(() => {
-    if (selection.view === 'branches') setGraphTree(selection.treeId);
-  }, [selection.view, selection.treeId]);
-  const displayGraph = selection.view === 'branches' || graphTree === selection.treeId;
+    if (view === 'branches') setGraphTree(selection.treeId);
+  }, [view, selection.treeId]);
+  const displayGraph = view === 'branches' || graphTree === selection.treeId;
   const run = state.run.data;
   const issues = state.run.error || state.list.error || state.detail.error;
   const allFailed = summary && summary.rollout_count > 0 && summary.failed_count === summary.rollout_count;
@@ -104,38 +120,53 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
                 : ` · 已结束 ${summary.completed_count}/${summary.rollout_count}${summary.failed_count ? ` · 执行失败 ${summary.failed_count}` : ''}`)}
             </p>
             <div className="sample-view-switch" role="group" aria-label="结果查看方式">
-              <Button size="sm" variant={selection.view === 'answers' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'answers'}
+              <Button size="sm" variant={view === 'answers' ? 'primary' : 'ghost'} aria-pressed={view === 'answers'}
                 onClick={() => onNavigate({ ...selection, view: 'answers' })}><List size={14} />回答列表</Button>
-              <Button size="sm" variant={selection.view === 'branches' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'branches'}
-                onClick={() => onNavigate({ ...selection, view: 'branches' })}><GitBranch size={14} />分支关系</Button>
+              <Button size="sm" variant={view === 'branches' ? 'primary' : 'ghost'} aria-pressed={view === 'branches'}
+                onClick={() => onNavigate({ ...selection, view: 'branches' })}><GitBranch size={14} />{isExecutionTree ? '执行树' : '分支关系'}</Button>
             </div>
             {allFailed && <SampleState kind="failed" compact title="本组尝试均执行失败"
               description="失败记录与实际奖励仍保留在下方。请查看训练日志定位原因。">
               <Button size="sm" variant="ghost" onClick={showLog}>查看失败日志</Button>
             </SampleState>}
           </div>
+          {!isExecutionTree && <p className="field-hint">旧版记录仅保存回答及来源，未记录逐节点执行过程。</p>}
+          {isExecutionTree && !data.tree.nodes.some(node => node.kind === 'execution') &&
+            <p className="field-hint">尚无实际执行节点，正在等待执行记录；候选采样状态可在回答列表查看。</p>}
+          {data.tree.issues.length > 0 && <InlineNotice tone="warning">
+            <strong>执行记录存在缺口，当前图不代表完整执行过程。</strong>
+            {data.tree.issues.map(issue => <p key={issue}>{issue}</p>)}
+          </InlineNotice>}
+          {isExecutionTree && state.nodeDetail?.error && chosen?.kind !== 'execution' && chosen?.kind !== 'query' &&
+            <InlineNotice tone="warning">节点内容读取失败：{state.nodeDetail.error}
+              <Button size="sm" onClick={() => void state.nodeDetail.refresh()}>重试节点读取</Button></InlineNotice>}
           {selection.nodeId && !chosen && <InlineNotice tone="warning">
-            {data.lookup_node_id === selection.nodeId
+            {isExecutionTree ? (state.nodeDetail?.loading ? '正在定位所选节点…' : '所选节点无法读取，未用其他记录代替。') : data.lookup_node_id === selection.nodeId
               ? '所选回答尚未加载或来源无法确认。已进行有界查找，不会用其他记录代替。'
               : '正在定位所选回答…'}
             <Button size="sm" onClick={closeDetails}>关闭选择</Button></InlineNotice>}
           {(state.cursor || state.detail.error) && <Button size="sm" variant="ghost" onClick={state.resetWindow}>从首批重新读取回答</Button>}
           <div key={selection.treeId} className="sample-views">
-            <div className="sample-answer-scroll" hidden={selection.view !== 'answers'}>
-              <AnswerList nodes={nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
+            <div className="sample-answer-scroll" hidden={view !== 'answers'}>
+              <AnswerList nodes={nodes} outcomes={data.tree.outcomes} selectedId={selectedId} onSelect={openAnswer} />
             </div>
-            {displayGraph && <div className="sample-graph-host" hidden={selection.view !== 'branches'}>
+            {displayGraph && <div className="sample-graph-host" hidden={view !== 'branches'}>
               <Suspense fallback={<SampleState kind="loading" title="正在加载分支关系" />}>
-                <BranchGraph nodes={data.tree.nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
+                {isExecutionTree
+                  ? <ExecutionGraph nodes={data.tree.nodes} edges={data.tree.edges || NO_EDGES} outcomes={data.tree.outcomes} selectedId={selectedId} onSelect={openAnswer} />
+                  : <BranchGraph nodes={data.tree.nodes} outcomes={data.tree.outcomes} selectedId={selectedId} onSelect={openAnswer} />}
               </Suspense>
             </div>}
           </div>
-          {data.tree.pending_nodes.length > 0 && <p className="sample-warning">有 {data.tree.pending_nodes.length} 条记录的父节点待关联；可在回答列表查看，未伪装为树根。</p>}
-          <div className="sample-load-more"><small>当前窗口已加载 {nodes.length}/{data.page.total} 条（含必要来源）；奖励与完成状态不等于答案正确。</small>
+          {data.tree.pending_nodes.length > 0 && <p className="sample-warning">有 {data.tree.pending_nodes.length} 条记录的来源待关联，未伪装为树根。</p>}
+          <div className="sample-load-more"><small>{isExecutionTree
+            ? `当前窗口显示 ${data.tree.nodes.length} 个节点（含问题与必要来源），过程记录总数 ${data.page.total}。`
+            : `当前窗口已加载 ${nodes.length}/${data.page.total} 条回答（含必要来源）。`}奖励与完成状态不等于答案正确。
+            {isExecutionTree && ` 候选回答 ${nodes.length} 条，仅显示已加载范围。`}</small>
             {data.page.next_cursor && <Button size="sm" onClick={() => {
               if (state.pages >= MAX_PAGES) { closeDetails(); state.nextWindow(); }
               else state.loadMore();
-            }}>{state.pages >= MAX_PAGES ? '查看下一批回答' : '加载更多回答'}</Button>}</div>
+            }}>{state.pages >= MAX_PAGES ? '查看下一批记录' : '加载更多记录'}</Button>}</div>
           {data.page.plan_total > 0 && <details className="sample-plans"><summary>分支计划 · 已加载 {data.tree.plans.length}/{data.page.plan_total}</summary>
             {data.tree.plans.filter(plan => plan.status !== 'enqueued').map(plan => <p key={plan.plan_id}>
               {plan.site_id || '位置未记录'} · {plan.status === 'skipped' ? '未执行' : '等待入队'}
@@ -147,8 +178,13 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
           </details>}
         </>}
       </div>
-      {chosen && data && <AnswerDetails key={`${selection.treeId}:${chosen.node_id}`} node={chosen} outcome={data.tree.outcomes[chosen.node_id]}
-        unresolved={data.tree.pending_nodes.some(n => n.node_id === chosen.node_id)} onSelect={selectAnswer} onClose={closeDetails} />}
+      {chosen && data && (chosen.kind === 'execution' || chosen.kind === 'query'
+        ? <ExecutionDetails key={`${selection.treeId}:${chosen.node_id}`} node={chosen} query={data.tree.query}
+          detail={exact?.node.node_id === chosen.node_id ? exact.detail : undefined}
+          loading={state.nodeDetail?.loading ?? false} error={state.nodeDetail?.error}
+          onRetry={() => void state.nodeDetail.refresh()} onClose={closeDetails} />
+        : <AnswerDetails key={`${selection.treeId}:${chosen.node_id}`} node={chosen} outcome={chosenOutcome}
+          unresolved={data.tree.pending_nodes.some(n => n.node_id === chosen.node_id)} onSelect={selectAnswer} onClose={closeDetails} />)}
     </div>
   </section>;
 });

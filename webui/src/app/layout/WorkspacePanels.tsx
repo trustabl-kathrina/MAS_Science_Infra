@@ -50,7 +50,7 @@ export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, 
   const canvas = isCanvasPanel(active);
   const requestedSettings = settings || (active === 'llm' ? 'inference' : active === 'rl' ? 'training' : active === 'harness' ? 'diagnostics' : null);
   const [jump, setJump] = useState(0);
-  const openSamples = useCallback((runId: string) => onSamples({ runId, view: 'answers' }), [onSamples]);
+  const openSamples = useCallback((runId: string) => onSamples({ runId, view: 'auto' }), [onSamples]);
   const backToRecords = useCallback(() => onChangePanel('records'), [onChangePanel]);
   const configure = useCallback((section: SettingsSection) => {
     setJump(value => value + 1);

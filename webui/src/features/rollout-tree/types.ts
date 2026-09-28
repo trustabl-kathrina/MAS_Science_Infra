@@ -1,7 +1,14 @@
 export interface TreeNode {
   node_id: string;
   parent_id: string | null;
-  kind: 'query' | 'rollout';
+  kind: 'query' | 'rollout' | 'execution' | 'outcome';
+  rollout_id?: string | null;
+  result_node_id?: string | null;
+  agent_id?: string | null;
+  agent_kind?: 'agent' | 'tool' | null;
+  turn?: number | null;
+  summary?: string | null;
+  detail_ref?: string | null;
   origin: 'initial' | 'independent_fill' | 'branch' | null;
   status: string | null;
   store_status: string | null;
@@ -22,6 +29,40 @@ export interface TreeNode {
   previous_attempts: Record<string, unknown>[];
   decision: Record<string, unknown>;
   metrics: Record<string, unknown>;
+}
+export interface TreeEdge {
+  source_node_id: string;
+  target_node_id: string;
+  kind: 'sequence' | 'branch';
+  window_id?: string | null;
+  snapshot_ref?: string | null;
+  site_id?: string | null;
+}
+export type JSONValue = null | boolean | number | string | JSONValue[] | { [key: string]: JSONValue };
+export interface ExecutionDetail {
+  node_id: string;
+  rollout_id?: string;
+  attempt_id?: string;
+  input?: JSONValue;
+  output?: JSONValue;
+  reasoning?: JSONValue;
+  tool_calls?: JSONValue;
+  observation?: JSONValue;
+  model?: string | null;
+  errors?: string[] | null;
+  status?: string | null;
+  elapsed_seconds?: number | null;
+  content_truncated?: boolean | null;
+  input_changed?: boolean | null;
+  output_origin?: string | null;
+}
+export interface NodeDetail {
+  experiment_id: string;
+  run_id: string;
+  tree_id: string;
+  node: TreeNode;
+  detail: ExecutionDetail | null;
+  outcome: Outcome | null;
 }
 export interface Outcome {
   error_details?: { stage: string; error_type: string; message: string } | null;
@@ -67,6 +108,7 @@ export interface TreeDetail {
   run_id: string;
   run_state: string;
   tree: {
+    schema_version?: 2 | 3;
     tree_id: string;
     query: string;
     query_truncated: boolean;
@@ -75,6 +117,8 @@ export interface TreeDetail {
     revision: number;
     updated_at: string | null;
     nodes: TreeNode[];
+    edges?: TreeEdge[];
+    rollouts?: TreeNode[];
     pending_nodes: TreeNode[];
     outcomes: Record<string, Outcome>;
     plans: { plan_id: string; parent_id: string; status: string; reason: string | null; site_id: string | null }[];

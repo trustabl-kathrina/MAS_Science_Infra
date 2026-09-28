@@ -38,7 +38,7 @@ export interface SampleSelection {
   runId: string;
   treeId?: string;
   nodeId?: string;
-  view: 'answers' | 'branches';
+  view: 'auto' | 'answers' | 'branches';
 }
 export type AppRoute = { kind: 'home' } | WorkspaceRoute | ResourceRoute | { kind: 'not-found' };
 
@@ -101,10 +101,10 @@ export function parseRoute(hash: string): AppRoute {
     const runId = parts[4];
     const treeId = params.get('tree') || undefined;
     const nodeId = params.get('answer') || undefined;
-    const view = params.get('view') || 'answers';
+    const view = params.get('view') || 'auto';
     if (!/^[a-f0-9]{12}$/.test(runId) || (treeId && !/^[a-f0-9]{32}$/.test(treeId))
       || (nodeId && (!treeId || nodeId.length > 256 || /[\u0000-\u001f]/.test(nodeId)))
-      || !['answers', 'branches'].includes(view)) return { kind: 'not-found' };
+      || !['auto', 'answers', 'branches'].includes(view)) return { kind: 'not-found' };
     return { ...workspaceRoute(experimentId, 'records'), ...consoleState,
       samples: { runId, treeId, nodeId, view: view as SampleSelection['view'] } };
   }

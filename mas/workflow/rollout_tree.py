@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
 
-from .contracts import RolloutTree, RolloutTreeNode, RolloutTreePlan, _utcnow
+from .contracts import ExecutionTrace, RolloutTree, RolloutTreeNode, RolloutTreePlan, _utcnow
 from .rollout_results import TERMINAL, merge_judgments, merge_observation
 
 logger = logging.getLogger(__name__)
@@ -45,14 +45,16 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
 class RolloutTreeArchive:
     """Single-writer archive; keep only the current batch's trees in memory."""
 
-    def __init__(self, root: Path, experiment_id: str, run_id: str):
+    def __init__(self, root: Path, experiment_id: str, run_id: str, *, schema_version: int = 2):
         self.root = root
         self.experiment_id = experiment_id
         self.run_id = run_id
+        self.schema_version = schema_version
         self.trees: dict[str, RolloutTree] = {}
         self.dirty: set[str] = set()
         self.errors: list[str] = []
         self._manifest_cache: dict[str, Any] | None = None
+        self._execution_cache: dict[Path, tuple[int, int, ExecutionTrace]] = {}
         root.mkdir(parents=True, exist_ok=True)
         self.summaries: dict[str, dict[str, Any]] = {}
         manifest = root / "manifest.json"
@@ -80,8 +82,8 @@ class RolloutTreeArchive:
         self._write_manifest()
 
     def _check_identity(self, tree: RolloutTree) -> None:
-        if (tree.schema_version, tree.experiment_id, tree.run_id) != (
-            2, self.experiment_id, self.run_id
+        if tree.schema_version not in (2, 3) or (tree.experiment_id, tree.run_id) != (
+            self.experiment_id, self.run_id
         ) or tree.tree_id != stable_id(self.experiment_id, self.run_id, tree.mode, tree.group_id):
             raise ValueError("Tree belongs to a different run or group")
 
@@ -98,7 +100,7 @@ class RolloutTreeArchive:
             else:
                 task_id = sample.get("id")
                 tree = RolloutTree(
-                    schema_version=2, tree_id=tree_id, experiment_id=self.experiment_id,
+                    schema_version=self.schema_version, tree_id=tree_id, experiment_id=self.experiment_id,
                     run_id=self.run_id, group_id=group_id,
                     task_id=str(task_id) if task_id is not None else None,
                     mode=mode, query=str(sample.get("question") or sample.get("query") or ""),
@@ -133,6 +135,8 @@ class RolloutTreeArchive:
                           if isinstance(meta.get("decision"), dict) and key in meta["decision"]},
                 metrics={key: meta[key] for key in ("h_root", "h_tool", "event_kind", "reward_scheme")
                          if key in meta},
+                source_attempt_id=meta.get("source_attempt_id"),
+                fork_node_ids=list(meta.get("fork_node_ids") or []),
                 status="skipped" if reason else "planned", reason=reason,
             )
             tree.plans.append(plan)
@@ -146,7 +150,7 @@ class RolloutTreeArchive:
         parent_id = str(sample.get("resume_parent_id") or "") or None
         origin = "branch" if parent_id else origin
         parent_id = parent_id or f"query:{tree.tree_id}"
-        known = {node.node_id: node for node in [*tree.nodes, *tree.pending_nodes]}
+        known = {node.node_id: node for node in [tree.nodes[0], *tree.rollout_records()]}
         previous = known.get(rollout_id)
         if previous:
             if previous.parent_id != parent_id or previous.plan_id != sample.get("plan_id"):
@@ -164,7 +168,7 @@ class RolloutTreeArchive:
         for other in self.trees.values():
             if other is tree:
                 continue
-            if any(node.node_id in (rollout_id, parent_id) for node in [*other.nodes, *other.pending_nodes]):
+            if any(node.node_id in (rollout_id, parent_id) for node in other.rollout_records()):
                 raise ValueError(f"Cross-group lineage for rollout {rollout_id}")
         plan_id = sample.get("plan_id")
         plan = next((item for item in tree.plans if item.plan_id == plan_id), None) if plan_id else None
@@ -188,12 +192,17 @@ class RolloutTreeArchive:
         if plan:
             plan.child_rollout_id = rollout_id
             plan.status, plan.reason = "enqueued", None
-        tree.pending_nodes.append(node)
+        if tree.schema_version == 3:
+            tree.rollouts.append(node)
+        else:
+            tree.pending_nodes.append(node)
         self._attach_pending(tree)
         self.dirty.add(tree.tree_id)
 
     @staticmethod
     def _attach_pending(tree: RolloutTree) -> None:
+        if tree.schema_version == 3:
+            return
         by_id = {node.node_id: node for node in tree.nodes}
         while True:
             attached = []
@@ -216,15 +225,17 @@ class RolloutTreeArchive:
 
     @staticmethod
     def _summary(tree: RolloutTree) -> dict[str, Any]:
-        nodes = [node for node in [*tree.nodes, *tree.pending_nodes] if node.kind == "rollout"]
-        rewards = [outcome["reward"] for outcome in tree.outcomes.values()
-                   if outcome.get("reward") is not None]
+        nodes = tree.rollout_records()
+        rewards = [outcome["reward"] for node in nodes
+                   if (outcome := tree.outcomes.get(node.result_node_id or node.node_id, {})).get("reward") is not None]
         return {
             "tree_id": tree.tree_id, "group_id": tree.group_id, "mode": tree.mode,
+            "schema_version": tree.schema_version,
             "task_id": tree.task_id, "created_at": tree.created_at.isoformat(),
             "revision": tree.revision, "updated_at": tree.updated_at.isoformat() if tree.updated_at else None,
-            "rollout_count": len(tree.nodes) - 1 + len(tree.pending_nodes),
-            "branch_count": sum(node.origin == "branch" for node in [*tree.nodes, *tree.pending_nodes]),
+            "rollout_count": len(nodes),
+            "execution_count": sum(node.kind == "execution" for node in tree.nodes),
+            "branch_count": sum(node.origin == "branch" for node in nodes),
             "plan_count": len(tree.plans), "pending_count": len(tree.pending_nodes),
             "issue_count": len(tree.issues) + sum(len(node.record_issues) for node in nodes),
             "completed_count": sum(node.store_status in TERMINAL for node in nodes),
@@ -232,8 +243,8 @@ class RolloutTreeArchive:
             "unconfirmed_count": sum(node.store_status not in TERMINAL for node in nodes),
             "missing_result_count": sum(
                 node.store_status in TERMINAL and (
-                    tree.outcomes.get(node.node_id, {}).get("answer") is None or
-                    tree.outcomes.get(node.node_id, {}).get("reward") is None
+                    tree.outcomes.get(node.result_node_id or node.node_id, {}).get("answer") is None or
+                    tree.outcomes.get(node.result_node_id or node.node_id, {}).get("reward") is None
                 ) for node in nodes
             ),
             "reward_min": min(rewards) if rewards else None,
@@ -242,20 +253,29 @@ class RolloutTreeArchive:
 
     def observe(self, rollout_id: str, sample: Mapping[str, Any], mode: str, **observation: Any) -> None:
         tree = self.group(sample, mode)
-        node = next((item for item in [*tree.nodes, *tree.pending_nodes] if item.node_id == rollout_id), None)
+        node = next((item for item in tree.rollout_records() if item.node_id == rollout_id), None)
         if node is None:
             raise ValueError(f"Observed rollout {rollout_id} has no archived enqueue record")
         if merge_observation(tree, node, **observation):
             self.dirty.add(tree.tree_id)
+        if tree.schema_version == 3:
+            from .execution_tree import assemble_executions
+
+            if assemble_executions(tree, self.root, cache=self._execution_cache):
+                self.dirty.add(tree.tree_id)
 
     def judgments(self, rollout_id: str, sample: Mapping[str, Any], mode: str,
                   judgments: list[dict[str, Any]], step: int, attempt_id: str | None) -> None:
         tree = self.group(sample, mode)
-        node = next((item for item in tree.nodes if item.node_id == rollout_id), None)
+        node = next((item for item in tree.rollout_records() if item.node_id == rollout_id), None)
         if node is None or node.attempt_id != attempt_id:
             raise ValueError(f"Judgment attempt mismatch for {rollout_id}")
         if merge_judgments(node, judgments, step):
             self.dirty.add(tree.tree_id)
+        if tree.schema_version == 3:
+            from .execution_tree import assemble_executions
+
+            assemble_executions(tree, self.root, cache=self._execution_cache)
 
     def report_error(self, message: str) -> None:
         logger.error("RolloutTree run=%s: %s", self.run_id, message)
@@ -288,7 +308,7 @@ class RolloutTreeArchive:
                 self.summaries[tree_id] = self._summary(snapshot)
                 self.dirty.remove(tree_id)
                 changes.append({
-                    "schema_version": 2, "event": "tree_updated", "experiment_id": self.experiment_id,
+                    "schema_version": snapshot.schema_version, "event": "tree_updated", "experiment_id": self.experiment_id,
                     "run_id": self.run_id, "tree_id": tree_id, "revision": snapshot.revision,
                 })
             except (OSError, ValueError) as error:
@@ -309,3 +329,4 @@ class RolloutTreeArchive:
                 self.report_error(f"write manifest: {error}")
         self.trees.clear()
         self.dirty.clear()
+        self._execution_cache.clear()
