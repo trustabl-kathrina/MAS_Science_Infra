@@ -4,6 +4,7 @@ import { ancestorPath, executionPositions, type Positions } from './executionLay
 import { ExecutionEdge, executionEdgeTone, type EdgeStateNode, type ExecutionFlowEdge } from './ExecutionEdge';
 import { answerName, answerState, edgeId, executionName, rewardText } from './model';
 import type { Outcome, TreeEdge, TreeNode } from './types';
+import { useDraggableNodes } from './useDraggableNodes';
 
 type ExecutionNode = Node<{ node: TreeNode; outcome?: Outcome; highlighted: boolean; onSelect: (id: string) => void }, 'execution'>;
 const ExecutionCard = memo(function ExecutionCard({ id, data, selected }: NodeProps<ExecutionNode>) {
@@ -31,11 +32,13 @@ type Topology = { nodes: Pick<TreeNode, 'node_id' | 'kind' | 'rollout_id'>[]; ed
 export default memo(function ExecutionGraph({ nodes, edges, outcomes, selectedId, onSelect }: {
   nodes: TreeNode[]; edges: TreeEdge[]; outcomes: Record<string, Outcome>; selectedId?: string; onSelect: (id: string) => void;
 }) {
-  const topology = JSON.stringify({ nodes: nodes.map(({ node_id, kind, rollout_id }) => ({ node_id, kind, rollout_id })), edges });
+  const topology = useMemo(() => JSON.stringify({
+    nodes: nodes.map(({ node_id, kind, rollout_id }) => ({ node_id, kind, rollout_id })), edges,
+  }), [nodes, edges]);
   const structure = useMemo<Topology>(() => JSON.parse(topology), [topology]);
   // Content/reward polling must not rebuild the edge objects or restart their animation.
-  const edgeStates = JSON.stringify(nodes.map(({ node_id, kind, status, execution_error, terminal_unconfirmed }) =>
-    ({ node_id, kind, status, execution_error, terminal_unconfirmed })));
+  const edgeStates = useMemo(() => JSON.stringify(nodes.map(({ node_id, kind, status, execution_error, terminal_unconfirmed }) =>
+    ({ node_id, kind, status, execution_error, terminal_unconfirmed }))), [nodes]);
   const stateById = useMemo(() => new Map((JSON.parse(edgeStates) as EdgeStateNode[]).map(node => [node.node_id, node])), [edgeStates]);
   const previous = useRef<Positions>(new Map());
   const positions = useMemo(() => executionPositions(structure.nodes, structure.edges, previous.current), [structure]);
@@ -46,6 +49,7 @@ export default memo(function ExecutionGraph({ nodes, edges, outcomes, selectedId
     selected: node.node_id === selectedId,
     data: { node, outcome: outcomes[node.node_id], highlighted: path.nodes.has(node.node_id), onSelect },
   })), [nodes, positions, outcomes, selectedId, path, onSelect]);
+  const draggable = useDraggableNodes(graphNodes);
   const graphEdges = useMemo<ExecutionFlowEdge[]>(() => {
     const parallel = new Map<string, number>();
     for (const edge of structure.edges) if (edge.kind === 'sequence') parallel.set(edge.source_node_id, (parallel.get(edge.source_node_id) || 0) + 1);
@@ -61,8 +65,9 @@ export default memo(function ExecutionGraph({ nodes, edges, outcomes, selectedId
   const onNodeClick = useCallback((_: React.MouseEvent, node: ExecutionNode) => onSelect(node.id), [onSelect]);
   return <div className="sample-graph sample-execution-graph" aria-label="横向执行树">
     {positions.size !== nodes.length && <p className="sample-graph-note">部分节点关系异常，暂不能布局；已保留可读取的记录。</p>}
-    <ReactFlow nodes={graphNodes} edges={graphEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView
-      nodesDraggable={false} nodesConnectable={false} edgesReconnectable={false}
+    <ReactFlow nodes={draggable.nodes} onNodesChange={draggable.onNodesChange}
+      edges={graphEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes} fitView
+      nodesDraggable nodesConnectable={false} edgesReconnectable={false}
       deleteKeyCode={null} minZoom={0.15} maxZoom={1.5} proOptions={{ hideAttribution: true }}
       onNodeClick={onNodeClick}>
       <Controls showInteractive={false} />

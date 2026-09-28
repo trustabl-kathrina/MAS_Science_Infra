@@ -92,7 +92,7 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
           {state.list.data?.items.map(item => <button type="button" key={item.tree_id} className={`sample-topic${item.tree_id === selection.treeId ? ' is-selected' : ''}`}
             aria-pressed={item.tree_id === selection.treeId} onClick={() => selectTree(item.tree_id)}>
             <strong>{item.query || (item.availability === 'unreadable' ? '题目记录读取失败' : '题目内容未记录')}</strong>
-            <span>{item.rollout_count} 次生成 · {item.branch_count ? `${item.branch_count} 次来自分支` : '无分支'}</span>
+            <span>{item.rollout_count} 条轨迹 · {item.branch_count ? `${item.branch_count} 次来自分支` : '无分支'}</span>
             <small>{item.mode === 'train' ? '训练' : '验证'} · {item.group_id.slice(0, 8)} · {new Date(item.created_at).toLocaleTimeString()}</small>
             {(item.failed_count > 0 || item.missing_result_count > 0 || item.error) && <small className="sample-warning">
               {item.error || `执行失败 ${item.failed_count} · 结果有缺失 ${item.missing_result_count}`}</small>}

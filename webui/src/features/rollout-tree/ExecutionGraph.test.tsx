@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { TreeNode } from './types';
 
@@ -26,7 +26,33 @@ it('updates node content without recreating positions or fitting the viewport ag
   expect(after.nodes[2].data.outcome.reward).toBe(0);
   expect(after.nodes.every((node: { data: { highlighted: boolean } }) => node.data.highlighted)).toBe(true);
   expect(after.onInit).toBeUndefined();
-  expect(after.onNodesChange).toBeUndefined();
+  expect(after.onNodesChange).toBe(before.onNodesChange);
+  expect(after.nodesDraggable).toBe(true);
+});
+
+it('preserves dragged positions across polling and appended nodes without rebuilding edges during drag', () => {
+  const nodes = [{ node_id: 'q', kind: 'query' }, { node_id: 'e', kind: 'execution', rollout_id: 'r' }] as TreeNode[];
+  const edges = [{ source_node_id: 'q', target_node_id: 'e', kind: 'sequence' as const }];
+  const onSelect = vi.fn();
+  const { rerender } = render(<ExecutionGraph nodes={nodes} edges={edges} outcomes={{}} onSelect={onSelect} />);
+  const before = flow.mock.lastCall![0];
+  act(() => before.onNodesChange([{ type: 'position', id: 'e', position: { x: 450, y: 220 }, dragging: true }]));
+  const dragging = flow.mock.lastCall![0];
+  expect(dragging.nodes[1].position).toEqual({ x: 450, y: 220 });
+  expect(dragging.nodes[0]).toBe(before.nodes[0]);
+  expect(dragging.nodes[1].data).toBe(before.nodes[1].data);
+  expect(dragging.edges).toBe(before.edges);
+  act(() => dragging.onNodesChange([{ type: 'position', id: 'e', position: { x: 450, y: 220 }, dragging: false }]));
+  rerender(<ExecutionGraph nodes={[...nodes.map(node => ({ ...node, summary: 'updated' })),
+    { node_id: 'next', kind: 'execution', rollout_id: 'r' } as TreeNode]}
+    edges={[...edges, { source_node_id: 'e', target_node_id: 'next', kind: 'sequence' }]}
+    outcomes={{}} selectedId="e" onSelect={onSelect} />);
+  const after = flow.mock.lastCall![0];
+  expect(after.nodes.find((node: { id: string }) => node.id === 'e').position).toEqual({ x: 450, y: 220 });
+  expect(after.nodes[1].data.node.summary).toBe('updated');
+  expect(after.nodes[1].dragging).toBe(false);
+  expect(after.nodes).toHaveLength(3);
+  expect(onSelect).not.toHaveBeenCalled();
 });
 
 it('keeps edge objects stable across content-only updates and distinguishes execution states', () => {
