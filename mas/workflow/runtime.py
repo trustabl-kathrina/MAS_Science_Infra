@@ -6,17 +6,21 @@ Must not import agentlightning. TirAgent is loaded via importlib (AST-safe).
 from __future__ import annotations
 
 import importlib
+import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import Any, Dict, List, Literal, Mapping, Optional, Protocol, Sequence, runtime_checkable
 from uuid import uuid4
 
 from .archive import Archive, branch_point_to_resume_task_fields, register_archive
 from .compiler import compile_spec, next_agent
-from .contracts import BranchPoint, EventKind, ExecutionEvent, MemoryItem, Trajectory
+from .contracts import BranchPoint, EventKind, ExecutionEvent, ExecutionFailure, MemoryItem, Trajectory
+from .llm_diagnostics import summarize_execution_error
 from .memory import MemoryStore
 from .plugins import invoke_hub_skills, invoke_skill, REGISTRY
 from .rewards import has_answer_format
 from .spec import MASSpec, load_spec
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,6 +53,7 @@ class EpisodeRaw:
     turn_records: List[Dict[str, Any]] = field(default_factory=list)
     obs_hashes: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    error_details: Optional[ExecutionFailure] = None
     lc_messages: Any = None
     skill_results: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -244,6 +249,8 @@ def episode_to_trajectory(
         traj.meta["skill_route"] = routes[-1]
     if raw.error:
         traj.meta["error"] = raw.error
+    if raw.error_details:
+        traj.meta["error_details"] = raw.error_details.model_dump()
     traj.sync_tir_meta()
     return traj
 
@@ -436,8 +443,12 @@ def run_episode(
     cfg: Dict[str, Any] = {"recursion_limit": 40}
     if llm.langchain_callbacks:
         cfg["callbacks"] = llm.langchain_callbacks
+    stage: Literal["graph_build", "graph_execution", "result_processing"] = "graph_build"
     try:
-        result_state = agent.graph().invoke(initial, cfg)
+        graph = agent.graph()
+        stage = "graph_execution"
+        result_state = graph.invoke(initial, cfg)
+        stage = "result_processing"
         messages = list(result_state["messages"])
         prediction = tir.extract_answer_from_messages(messages)
         raw_text = tir.last_assistant_text(messages)
@@ -501,8 +512,19 @@ def run_episode(
         _close_construct(archive, spec, memory, raw, task, agent_id=agent_id)
         return raw
     except Exception as e:
-        archive.append(ExecutionEvent(kind=EventKind.ERROR, payload={"error": str(e)}))
-        raw_err = EpisodeRaw(messages=[], error=str(e), skill_results=skill_results)
+        details = ExecutionFailure(
+            stage=stage, error_type=type(e).__name__[:128],
+            message=summarize_execution_error(e, llm.api_key),
+        )
+        logger.error(
+            "Episode failed rollout=%s attempt=%s agent=%s stage=%s type=%s reason=%s",
+            task.get("_rollout_id", "unknown"), task.get("_attempt_id", "unknown"),
+            agent_id, details.stage, details.error_type, details.message,
+        )
+        archive.append(ExecutionEvent(kind=EventKind.ERROR, payload={
+            "error": details.message, "error_details": details.model_dump(),
+        }))
+        raw_err = EpisodeRaw(messages=[], error=details.message, error_details=details, skill_results=skill_results)
         _close_construct(archive, spec, memory, raw_err, task, agent_id=agent_id)
         return raw_err
 

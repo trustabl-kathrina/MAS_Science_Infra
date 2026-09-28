@@ -27,6 +27,7 @@ from rl.hooks.arpo_rollout import (
 from rl.rewards import compute_outcome_reward, extract_answer_text, has_answer_format, normalize_qa, parse_alias_field
 from tools.langchain_tools import TOOL_MAP, TOOLS
 from workflow.llm_diagnostics import log_first_model_failure
+from workflow.agent_tracing import agent_node_name
 
 try:
     from workflow.env_load import load_repo_dotenv
@@ -688,7 +689,7 @@ class TirAgent:
 
     def graph(self) -> CompiledStateGraph:
         builder = StateGraph(AgentState)
-        model_node = f"agent:{self.agent_id}"
+        model_node = agent_node_name(self.agent_id)
         builder.add_node(model_node, self.call_model)
         builder.add_node("tools", self.call_tools)
         builder.add_node("finalize", self.request_finalize)

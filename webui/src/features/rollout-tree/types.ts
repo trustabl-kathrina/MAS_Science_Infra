@@ -24,6 +24,7 @@ export interface TreeNode {
   metrics: Record<string, unknown>;
 }
 export interface Outcome {
+  error_details?: { stage: string; error_type: string; message: string } | null;
   answer?: string | null;
   answer_truncated?: boolean;
   reward?: number | null;

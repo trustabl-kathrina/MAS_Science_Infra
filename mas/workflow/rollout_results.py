@@ -7,7 +7,7 @@ from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
-from .contracts import RolloutTree, RolloutTreeNode
+from .contracts import ExecutionFailure, RolloutTree, RolloutTreeNode
 
 RESULT_ATTRIBUTE = "tir.rollout_result"
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -25,6 +25,7 @@ class RunnerResult(BaseModel):
     answer_truncated: bool = False
     format_ok: bool
     execution_error: Literal["execution_error"] | None = None
+    error_details: ExecutionFailure | None = None
     reward: float = Field(allow_inf_nan=False)
     archive_id: str | None = None
 
@@ -33,7 +34,8 @@ class RunnerResult(BaseModel):
 
 def result_annotation(rollout_id: str, attempt_id: str, answer: str | None,
                       reward: float, format_ok: bool, failed: bool,
-                      archive_id: str | None = None) -> str:
+                      archive_id: str | None = None, *,
+                      error_details: ExecutionFailure | None = None) -> str:
     return RunnerResult(
         rollout_id=rollout_id, attempt_id=attempt_id,
         answer=answer[:4000] if answer is not None else None,
@@ -41,6 +43,7 @@ def result_annotation(rollout_id: str, attempt_id: str, answer: str | None,
         reward=reward, format_ok=format_ok,
         execution_error="execution_error" if failed else None,
         archive_id=archive_id or None,
+        error_details=error_details,
     ).model_dump_json()
 
 
@@ -120,6 +123,8 @@ def merge_observation(
             continue
         for key in ("answer", "answer_truncated", "format_ok", "reward", "archive_id", "execution_error"):
             put(key, getattr(result, key))
+        if result.error_details is not None:
+            put("error_details", result.error_details.model_dump())
         put("result_source", "runner_annotation_v1")
     if reward is not None:
         put("reward", reward)

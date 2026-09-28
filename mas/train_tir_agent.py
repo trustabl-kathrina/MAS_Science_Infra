@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path, PureWindowsPath
@@ -23,6 +22,7 @@ from typing import Any, Dict, Optional
 os.environ.setdefault("VLLM_USE_V1", "1")
 
 from rl.hooks.overlay import VALID_ALGOS, apply_sample_policy, apply_train_signal
+from workflow.agent_tracing import agent_span_pattern
 
 DEFAULT_MODEL_PATH = "/root/autodl-tmp/MAS_Science_Infra/LLM/Qwen3-4B"
 # mas/ → MAS_Science_Infra
@@ -192,27 +192,18 @@ def train(config: Dict[str, Any], n_runners: int, active_agents: list[str]) -> N
     print(f"AGL_METRICS_JSONL={metrics_path}")
     print(f"TENSORBOARD_DIR={os.environ['TENSORBOARD_DIR']}")
 
+    from rl.hooks.trainer import TirAgentLightningTrainer, bound_daemon_cls
+
+    daemon_cls = bound_daemon_cls(tir_algo, tir_cfg)
     if tir_algo == "grpo":
-        if os.environ.get("TIR_ROLLOUT_TREE_DIR"):
-            from rl.hooks.trainer import bound_daemon_cls
-
-            algorithm = agl.VERL(config, daemon_cls=bound_daemon_cls(tir_algo, tir_cfg))
-        else:
-            algorithm = agl.VERL(config)
+        algorithm = agl.VERL(config, daemon_cls=daemon_cls)
     else:
-        from rl.hooks.trainer import TirAgentLightningTrainer, bound_daemon_cls
-
         algorithm = agl.VERL(
             config,
             trainer_cls=TirAgentLightningTrainer,
-            daemon_cls=bound_daemon_cls(tir_algo, tir_cfg),
+            daemon_cls=daemon_cls,
         )
-    # TirAgent names its LangGraph LLM node "agent:<MAS id>", allowing the
-    # adapter to select one Agent without mixing spans from the rest of the graph.
-    agent_match = (
-        rf"^agent:({'|'.join(re.escape(agent) for agent in active_agents)})$"
-        if active_agents else None
-    )
+    agent_match = agent_span_pattern(active_agents)
     trainer = agl.Trainer(
         n_runners=n_runners,
         algorithm=algorithm,

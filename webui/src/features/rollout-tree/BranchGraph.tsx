@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import { ReactFlow, Handle, Position, Controls, type Node, type NodeProps, type Edge } from '@xyflow/react';
 import { answerName, answerSource, answerState, forestPositions, rewardText } from './model';
 import type { TreeNode, Outcome } from './types';
+import { SampleState } from './SampleState';
 
 type AnswerNode = Node<{ title: string; state: string; tone: string; reward: string; source: string;
   onSelect: (id: string) => void }, 'answer'>;
@@ -44,6 +45,7 @@ export default memo(function BranchGraph({ nodes, outcomes, selectedId, onSelect
       style: { stroke: '#91a5c0' }, labelStyle: { fontSize: 10 },
     }));
   }, [nodes]);
+  if (!graphNodes.length) return <SampleState title="暂无可展示的分支关系" description="实际生成记录及其来源确认后，关系图将显示在这里。" />;
   return <div className="sample-graph" aria-label="回答分支关系图">
     {!edges.length && <p className="sample-graph-note">当前已加载记录无分支连线，独立回答不互相连接。</p>}
     <ReactFlow nodes={graphNodes} edges={edges} nodeTypes={NODE_TYPES} fitView

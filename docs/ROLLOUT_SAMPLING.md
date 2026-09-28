@@ -8,6 +8,22 @@
 
 **Control UI：** MAS 页 **Rollout Sampling** 小窗是 `SamplePolicy.sites` 的轨迹可视化（非第二条配置源）；见 [BRANCH_SITE_DESIGN.md](BRANCH_SITE_DESIGN.md) §3、[BRANCH_ROLLOUT_UI_TEST.md](BRANCH_ROLLOUT_UI_TEST.md)、验收小窗 [ROLLOUT_SAMPLING_UI_TEST.md](ROLLOUT_SAMPLING_UI_TEST.md)（`./run.sh traj-test`）。
 
+### 训练节点与有效样本
+
+业务 Agent ID（如 `hub`）不直接作为 LangGraph 节点名。`mas/workflow/agent_tracing.py`
+统一生成合法节点名（如 `agent__hub`）和 Adapter 的精确匹配表达式；图与过滤器必须一同部署。
+不要使用含 LangGraph 保留字符 `:`、`|` 的节点名，也不要通过关闭 Agent 过滤来修复空样本。
+
+所有 TIR 训练算法（包括未启用 Rollout Tree 的 GRPO）共用 `TirAgentModeDaemon` 的组批入口；
+GRPO 仍使用原生 Trainer 和优势计算。组批前若整批没有同时包含非空 prompt/response token IDs
+的 triplet，训练明确终止并报告 rollout 数、triplet 数和 Agent 匹配规则，不构造空张量、
+补造样本或改变奖励。
+
+执行错误记录 `graph_build`、`graph_execution` 或 `result_processing` 阶段、异常类型及脱敏原因，
+并关联 rollout/attempt，传递至 Archive 和 Rollout Tree。Runner 的 `Completed` 或负奖励不代表
+模型调用成功；服务器验收需要确认真实模型调用被 Adapter 提取为有效 triplet，并完成参数更新。
+分支日志区分真实续跑分支和独立补采样，不能仅凭追加 rollout 数判断分支是否生效。
+
 ---
 
 
@@ -889,5 +905,4 @@ flowchart TB
 | `[rl/hooks/arpo_rollout.py](../rl/hooks/arpo_rollout.py)`     | `should_branch` / AEPO 预算                   |
 | `[rl/hooks/overlay.py](../rl/hooks/overlay.py)`               | SamplePolicy → Hydra                        |
 | `[webui/src/pages/MAS.tsx](../webui/src/pages/MAS.tsx)`       | UI：mode / group_n / beam_size               |
-
 

@@ -219,6 +219,14 @@ class TrajectoryBatch(BaseModel):
 # --- RolloutTree contract (new_framework P0) ---------------------------------
 
 
+class ExecutionFailure(BaseModel):
+    stage: Literal["graph_build", "graph_execution", "result_processing"]
+    error_type: str = Field(max_length=128)
+    message: str = Field(max_length=1000)
+
+    model_config = {"extra": "forbid"}
+
+
 class RolloutTreeNode(BaseModel):
     """One node of a per-query rollout tree (root=query, leaves=outcomes)."""
 

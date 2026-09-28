@@ -3,6 +3,7 @@ import { ArrowLeft, Maximize2, Minimize2, X } from 'lucide-react';
 import { Button } from '../../shared/ui/button';
 import { answerName, answerSource, answerState, rewardText } from './model';
 import type { Outcome, TreeNode } from './types';
+import { SampleState } from './SampleState';
 
 export const AnswerDetails = memo(function AnswerDetails({ node, outcome, unresolved, onSelect, onClose }: {
   node: TreeNode; outcome?: Outcome; unresolved: boolean; onSelect: (id: string) => void; onClose: () => void;
@@ -23,7 +24,14 @@ export const AnswerDetails = memo(function AnswerDetails({ node, outcome, unreso
       <div className="sample-result-heading"><span className={`sample-state is-${state.tone}`}>{state.label}</span>
         <span>最终奖励 <strong>{rewardText(outcome?.reward)}</strong></span></div>
       {node.record_issues.length > 0 && <p className="sample-warning">记录存在冲突或缺口，以下内容不能视为完整结果。</p>}
-      <section><h4>回答内容</h4><p className="sample-full-answer">{outcome?.answer ?? '未记录最终答案'}</p>
+      {outcome?.error_details && <section className="sample-execution-error" aria-label="执行失败原因">
+        <h4>执行失败原因</h4>
+        <p>{({ graph_build: '工作流图构建', graph_execution: '工作流执行', result_processing: '结果处理' })[outcome.error_details.stage] || outcome.error_details.stage}
+          {' · '}{outcome.error_details.error_type}</p>
+        <p className="sample-full-answer">{outcome.error_details.message}</p>
+      </section>}
+      <section><h4>回答内容</h4>{outcome?.answer != null ? <p className="sample-full-answer">{outcome.answer}</p>
+        : <SampleState compact kind={node.status === 'failed' ? 'failed' : 'empty'} title="未记录最终答案" />}
         {outcome?.answer_truncated && <p className="field-hint">这里只保存了答案摘要，内容已截断；没有可用的完整答案下载。</p>}
         {outcome?.reward == null && <p className="field-hint">最终奖励未记录，不代表奖励为 0。</p>}
       </section>

@@ -76,7 +76,7 @@ export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, 
     {samples && <div hidden={!visible} role="region" aria-label="训练采样结果">
       <Suspense fallback={<p className="sample-empty">加载采样结果页面…</p>}>
         <SampleResults key={`${bundle.id}:${samples.runId}`} experimentId={bundle.id} selection={samples}
-          active={visible} onNavigate={onSamples} onBack={backToRecords} />
+          active={visible} onNavigate={onSamples} onHistory={backToRecords} />
       </Suspense>
     </div>}
     </div>

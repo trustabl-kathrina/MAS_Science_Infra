@@ -40,6 +40,13 @@ def _summary(value: str, limit: int = 1000) -> str:
     return " ".join(value.split())[:limit]
 
 
+def summarize_execution_error(error: Exception, api_key: str | None = None) -> str:
+    message = str(error)
+    if api_key:
+        message = message.replace(api_key, "[redacted]")
+    return _summary(message)
+
+
 def log_model_route(label: str, endpoint: str, model: str) -> None:
     proxies = getproxies()
     host = urlsplit(endpoint).hostname or ""

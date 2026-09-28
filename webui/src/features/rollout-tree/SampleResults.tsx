@@ -1,11 +1,12 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, RefreshCw } from 'lucide-react';
+import { GitBranch, List } from 'lucide-react';
 import type { SampleSelection } from '../../app/navigation';
 import { useRuntimeCommands } from '../../app/providers/RuntimeProvider';
 import { Button } from '../../shared/ui/button';
 import { Select } from '../../shared/ui/select';
 import { InlineNotice } from '../../shared/components/InlineNotice';
-import { Snapshot, TRAIN_STATE } from '../training/components/TrainingConsole';
+import { SampleHeader } from './SampleHeader';
+import { SampleState } from './SampleState';
 import { AnswerDetails } from './AnswerDetails';
 import { AnswerList } from './AnswerList';
 import { MAX_PAGES } from './model';
@@ -13,12 +14,13 @@ import { useSampleResults } from './useSampleResults';
 
 const BranchGraph = lazy(() => import('./BranchGraph'));
 
-export const SampleResults = memo(function SampleResults({ experimentId, selection, active, onNavigate, onBack }: {
+export const SampleResults = memo(function SampleResults({ experimentId, selection, active, onNavigate, onHistory }: {
   experimentId: string; selection: SampleSelection; active: boolean;
-  onNavigate: (selection: SampleSelection) => void; onBack: () => void;
+  onNavigate: (selection: SampleSelection) => void; onHistory: () => void;
 }) {
   const state = useSampleResults(experimentId, selection.runId, selection.treeId, selection.nodeId, active);
   const { viewTraining } = useRuntimeCommands();
+  const showLog = useCallback(() => viewTraining(selection.runId), [viewTraining, selection.runId]);
   const navigation = useRef({ selection, onNavigate });
   useLayoutEffect(() => { navigation.current = { selection, onNavigate }; }, [selection, onNavigate]);
   const selectTree = useCallback((treeId: string) => navigation.current.onNavigate({
@@ -50,18 +52,11 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
   const displayGraph = selection.view === 'branches' || graphTree === selection.treeId;
   const run = state.run.data;
   const issues = state.run.error || state.list.error || state.detail.error;
+  const allFailed = summary && summary.rollout_count > 0 && summary.failed_count === summary.rollout_count;
   return <section className="sample-results" aria-label="采样结果">
-    <header className="sample-page-header">
-      <div><Button size="sm" variant="ghost" onClick={onBack}><ArrowLeft size={14} />训练记录</Button>
-        <h1>采样结果</h1>
-        <p>{run?.meta?.algo ? String(run.meta.algo).toUpperCase() : '算法未记录'} · {run?.started_at ? new Date(run.started_at * 1000).toLocaleString() : '时间未记录'}
-          {' · '}{TRAIN_STATE[run?.state || state.list.data?.run_state || ''] || '读取状态…'}</p>
-        <small>本次运行 <code>{selection.runId}</code>{data?.tree.updated_at ? ` · 记录更新于 ${new Date(data.tree.updated_at).toLocaleTimeString()}` : ''}</small>
-      </div>
-      <div className="sample-actions"><Button size="sm" onClick={() => viewTraining(selection.runId)}>查看日志</Button>
-        <Snapshot experimentId={experimentId} runId={selection.runId} />
-        <Button size="sm" variant="ghost" onClick={state.refresh}><RefreshCw size={14} />刷新</Button></div>
-    </header>
+    <SampleHeader experimentId={experimentId} runId={selection.runId} run={run}
+      runState={state.list.data?.run_state} updatedAt={data?.tree.updated_at}
+      onHistory={onHistory} onLog={showLog} onRefresh={state.refresh} />
     {issues && <InlineNotice tone="warning">读取未完成，已加载内容可能陈旧：{issues}<Button size="sm" onClick={state.refresh}>重试</Button>
       {state.cursor && <Button size="sm" onClick={state.resetWindow}>从首批重新读取</Button>}
     </InlineNotice>}
@@ -86,26 +81,38 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
             {(item.failed_count > 0 || item.missing_result_count > 0 || item.error) && <small className="sample-warning">
               {item.error || `执行失败 ${item.failed_count} · 结果有缺失 ${item.missing_result_count}`}</small>}
           </button>)}
-          {!state.list.data?.items.length && <p className="sample-empty">{state.list.loading ? '读取题目记录…' :
-            state.list.error ? '题目记录读取失败，请重试。' : state.list.data?.availability === 'missing' ? '此运行尚无采样记录，或创建于旧版本。' : '暂无符合范围的题目记录。'}</p>}
+          {!state.list.data?.items.length && <SampleState
+            kind={state.list.error ? 'error' : state.list.loading ? 'loading' : 'empty'}
+            title={state.list.error ? '记录读取失败' : state.list.loading ? '正在读取题目' : '暂无题目记录'}
+            description={state.list.error ? '请重试读取，不会影响训练。' : state.list.loading ? '题目记录准备就绪后显示在这里。' :
+              state.list.data?.availability === 'missing' ? '此运行尚未生成记录，或创建于旧版本。' : '当前筛选范围内没有记录。'} />}
         </div>
         <footer><Button size="sm" disabled={state.offset === 0} onClick={() => state.setOffset(Math.max(0, state.offset - 20))}>上一页</Button>
           <small>{state.list.data?.total ?? '—'} 条记录</small>
           <Button size="sm" disabled={state.list.data?.next_offset == null} onClick={() => state.setOffset(state.list.data!.next_offset!)}>下一页</Button></footer>
       </aside>
       <div className="sample-main" role="region" aria-label="题目回答">
-        {!data ? <p className="sample-empty">{state.detail.error ? '此题目读取失败，请重试。' : selection.treeId ? '读取回答…' : '选择左侧题目，查看生成过的回答。'}</p> : <>
+        {!data ? <SampleState kind={state.detail.error ? 'error' : selection.treeId ? 'loading' : 'select'}
+          title={state.detail.error ? '暂时无法读取回答' : selection.treeId ? '正在读取回答' : '从一道题目开始'}
+          description={state.detail.error ? '记录仍保留在服务器，请重试读取。' : selection.treeId ? '正在加载这次采样的结果与来源。' : '选择左侧题目，查看回答与分支关系。'}>
+          {state.detail.error && <Button size="sm" onClick={state.refresh}>重试读取</Button>}
+        </SampleState> : <>
           <div className="sample-question"><h2>{data.tree.query || '题目内容未记录'}</h2>
             {data.tree.query_truncated && <small>题目为截断摘要</small>}
             <p>{data.tree.mode === 'train' ? '训练' : '验证'} · 采样记录 {data.tree.group_id.slice(0, 12)}
-              {summary && ` · 已结束 ${summary.completed_count}/${summary.rollout_count} · 执行失败 ${summary.failed_count}`}
+              {summary && (allFailed ? ` · ${summary.rollout_count} 次尝试均执行失败`
+                : ` · 已结束 ${summary.completed_count}/${summary.rollout_count}${summary.failed_count ? ` · 执行失败 ${summary.failed_count}` : ''}`)}
             </p>
             <div className="sample-view-switch" role="group" aria-label="结果查看方式">
               <Button size="sm" variant={selection.view === 'answers' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'answers'}
-                onClick={() => onNavigate({ ...selection, view: 'answers' })}>回答列表</Button>
+                onClick={() => onNavigate({ ...selection, view: 'answers' })}><List size={14} />回答列表</Button>
               <Button size="sm" variant={selection.view === 'branches' ? 'primary' : 'ghost'} aria-pressed={selection.view === 'branches'}
-                onClick={() => onNavigate({ ...selection, view: 'branches' })}>分支关系</Button>
+                onClick={() => onNavigate({ ...selection, view: 'branches' })}><GitBranch size={14} />分支关系</Button>
             </div>
+            {allFailed && <SampleState kind="failed" compact title="本组尝试均执行失败"
+              description="失败记录与实际奖励仍保留在下方。请查看训练日志定位原因。">
+              <Button size="sm" variant="ghost" onClick={showLog}>查看失败日志</Button>
+            </SampleState>}
           </div>
           {selection.nodeId && !chosen && <InlineNotice tone="warning">
             {data.lookup_node_id === selection.nodeId
@@ -118,7 +125,7 @@ export const SampleResults = memo(function SampleResults({ experimentId, selecti
               <AnswerList nodes={nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
             </div>
             {displayGraph && <div className="sample-graph-host" hidden={selection.view !== 'branches'}>
-              <Suspense fallback={<p className="sample-empty">加载分支关系…</p>}>
+              <Suspense fallback={<SampleState kind="loading" title="正在加载分支关系" />}>
                 <BranchGraph nodes={data.tree.nodes} outcomes={data.tree.outcomes} selectedId={selection.nodeId} onSelect={openAnswer} />
               </Suspense>
             </div>}

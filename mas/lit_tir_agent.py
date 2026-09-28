@@ -68,6 +68,7 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
         resume_parent = str(task.get("resume_parent_id") or "")
         task_run = dict(task)
         task_run["_rollout_id"] = rollout_id
+        task_run["_attempt_id"] = rollout.attempt.attempt_id
 
         if not task_run.get("resume_messages") and task_run.get("resume_from"):
             try:
@@ -259,6 +260,7 @@ class LitTirAgent(agl.LitAgent[Dict[str, Any]]):
                     RESULT_ATTRIBUTE: result_annotation(
                         rollout_id, rollout.attempt.attempt_id, prediction, reward,
                         bool(format_ok), bool(raw.error), archive_id,
+                        error_details=raw.error_details,
                     ),
                     "tir.source": source,
                     "tir.n_search": int(n_search),

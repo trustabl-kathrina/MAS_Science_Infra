@@ -125,6 +125,9 @@ GET /api/rl/runs/<run_id>/rollout-trees/<tree_id>?experiment_id=<id>
 
 ## Implementation Notes
 
+- 训练回归修复：图构建、执行和结果处理异常新增 `error_details`，包含阶段、异常类型和最长 1000 字符的脱敏摘要，同时记录 rollout/attempt。复用现有密钥和 URL 脱敏逻辑，不输出原始请求上下文。Runner annotation、树 outcome 和回答详情贯通此字段，历史仅有 `execution_error` 的记录仍可读取，但无法追补当时丢失的错误原因。
+- 全批无有效 prompt/response token 时，我方 Daemon 在进入上游张量构造前明确中止并输出样本计数、过滤规则和示例 rollout ID；不伪造 token、不补造训练样本、不修改 reward，也不静默跳过整批。节点名与 Adapter 过滤已共用合法命名函数，这是根因修复，空批次检查只是辅助诊断。
+- 二波入队日志分别显示实际提交的 branch 数与 independent fill 数，不再把所有补采样统称 branch/resume。真实训练仍需服务器验证；本地检查不证明已完成参数更新。
 - 2026-09-28：第二阶段代码已接入；本地仅检查核心纯逻辑、假 Store 和进程内 HTTP，不启动 GPU、浏览器或训练服务。第三阶段 UI 尚未实施。
 - 新增 `mas\workflow\rollout_results.py` 负责有版本的 Runner 摘要、attempt 顺序、结果合并和判定明细；归档仍由第一阶段模块负责。`rl\hooks\rollout_tree.py` 负责 Store 对账与训练边界容错，不把全部逻辑堆入 Daemon。
 - Runner 通过现有 annotation 的 `tir.rollout_result` 字符串字段发送 JSON，避免嵌套属性被展开后丢失结构。只记录最长 4000 字符答案、截断标记、格式标记、已实际发出的 reward、错误分类及已有 Archive ID，不复制提示词和完整错误内容。Archive ID 只是来源，不声明新增了完整 Trace 下载接口。

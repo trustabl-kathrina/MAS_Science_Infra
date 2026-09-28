@@ -277,16 +277,20 @@ inherit
 每个 Agent 的 LangGraph LLM 节点使用：
 
 ```text
-agent:<agent_id>
+agent__<encoded_agent_id>
 ```
 
 Adapter 过滤表达式：
 
 ```text
-^agent:(hub|planner)$
+^(?:agent__hub|agent__planner)$
 ```
 
 保证只消费 `trainable=true` Agent 的模型 span，冻结 Agent 的调用不进入梯度优化。
+
+节点名与过滤表达式统一由 `mas/workflow/agent_tracing.py` 生成。普通 ID 如 `hub` 保持可读；保留字符、百分号和非 ASCII 字符使用 URL 编码，避免 LangGraph 禁止的 `:`、`|` 及简单替换造成的命名碰撞。不能只修改图节点而保留旧过滤器，也不能通过关闭过滤绕过空批次。
+
+2026-09-28 修正：原 `agent:<id>` 命名会在图构建阶段失败，这是 `75730b9` 引入的训练回归。已使用实际 `TirAgent.graph()` 与 LangGraph 在无模型调用条件下检查构图、执行和回调名称，并检查训练过滤范围；服务器真实 span 提取和参数更新仍需新建运行验收。
 
 ## Backend Contract
 
@@ -394,7 +398,7 @@ planner  Qwen3-8B
 | `workflowGraph.ts` | `model` 无损序列化 |
 | `mas/workflow/runtime.py` | 每个 Agent 使用对应 LLM |
 | `science_infra/control/training.py` | 按 trainable Agent 解析训练范围和模型 |
-| `mas/tir_agent.py` | `agent:<id>` trace 节点 |
+| `mas/tir_agent.py` | 使用共享函数生成合法 Agent trace 节点名 |
 | `mas/train_tir_agent.py` | 多 Agent span 过滤 |
 
 ## Acceptance

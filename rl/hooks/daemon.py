@@ -22,6 +22,7 @@ from workflow.llm_diagnostics import log_model_route
 from rl.hooks.rae_advantage import adjudicate_action_group, apply_dead_end_backprop_verdicts
 from rl.hooks.rollout_tree import RolloutTreeRecorder
 from workflow.rollout_tree import identify_plans
+from .training_batch import require_training_samples
 
 
 def emit_rollout_tree_event(event: Dict[str, Any]) -> None:
@@ -413,13 +414,19 @@ class TirAgentModeDaemon(AgentModeDaemon):
             if not self.is_train or self.tir_algo not in ("arpo", "aepo", "rae"):
                 return
             if self._expand_in_runner():
+                branches_before = self._store_enqueue_branch_count
                 extra = await self._enqueue_from_runner_expansions()
             else:
                 extra = await self._enqueue_tree_branches_legacy()
             if extra <= 0:
                 return
             if verbose:
-                print(f"[TIR {self.tir_algo}] enqueued {extra} branch/resume rollouts; waiting...")
+                if self._expand_in_runner():
+                    branches = self._store_enqueue_branch_count - branches_before
+                    print(f"[TIR {self.tir_algo}] enqueued {extra} rollouts: "
+                          f"{branches} branches, {extra - branches} independent fills; waiting...")
+                else:
+                    print(f"[TIR {self.tir_algo}] enqueued {extra} additional rollouts; waiting...")
             await super()._async_run_until_finished(verbose=verbose)
         finally:
             if self._tree_recorder:
@@ -670,6 +677,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
         return await self._enqueue_tree_branches_legacy()
 
     def get_train_data_batch(self, max_prompt_length: int, max_response_length: int, device, global_steps: int):
+        require_training_samples(self._completed_rollouts_v0, getattr(self.adapter, "agent_match", None))
         data_proto, data_metrics = super().get_train_data_batch(
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
