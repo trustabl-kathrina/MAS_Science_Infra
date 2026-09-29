@@ -2,7 +2,7 @@
 
 Science Studio 是多智能体强化学习实验的控制面。一个实验是 `experiments/<id>/` 下的五份 YAML（experiment / llm / workflow / rl / harness），界面和命令行读写同一份文件。画布编辑 Agent 工作流和分支采样站点，不生成 LangGraph 代码。
 
-采样站点用 `BranchSite` 声明锚点、门控和 fork 预算，写入 `workflow.yaml`。训练算法是 GRPO 族：grpo / arpo / aepo / appo / rae。第一波独立采样，第二波从断点续写并补齐到 `group_n`。训练进行时，Runs 里可以打开采样树，Monitor 显示实验级 reward 曲线和当前 run 的 stdout。采集可以单独运行，不启动训练、不占用训练 GPU。
+采样站点用 `BranchSite` 声明锚点、门控和 fork 预算，写入 `workflow.yaml`。训练算法是 GRPO 族：grpo / arpo / aepo / appo。第一波独立采样，第二波从断点续写并补齐到 `group_n`。训练进行时，Runs 里可以打开采样树，Monitor 显示实验级 reward 曲线和当前 run 的 stdout。采集可以单独运行，不启动训练、不占用训练 GPU。
 
 训练运行时使用 [Agent-Lightning](https://github.com/qihoo360/agent-lightning) 与 VERL。本仓库不修改 `agent-lightning/` 的源码。Collect 走编译后的多 Agent 图；当前训练热路径仍是单 hub TirAgent，加上画布上声明的分支采样。
 
