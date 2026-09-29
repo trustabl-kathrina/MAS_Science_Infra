@@ -30,11 +30,29 @@ class EventBus:
         with self._lock:
             self._buffers[experiment_id].append(payload)
             waiters = list(self._waiters.get(experiment_id, []))
-        for q in waiters:
+            loop = self._loop
+
+        def _put(q: asyncio.Queue) -> None:
             try:
                 q.put_nowait(payload)
             except Exception:
                 pass
+
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        # Same-thread publishers (the SSE drain) must deliver on the loop that
+        # is actually running. Watcher threads schedule onto the bound loop.
+        target = running or loop
+        for q in waiters:
+            if target is not None and running is not target:
+                try:
+                    target.call_soon_threadsafe(_put, q)
+                    continue
+                except RuntimeError:
+                    pass
+            _put(q)
 
     def history(self, experiment_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         with self._lock:

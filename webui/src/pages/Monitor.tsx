@@ -5,7 +5,7 @@ import { InlineNotice } from '../shared/components/InlineNotice';
 import { LoadingState } from '../shared/components/LoadingState';
 import { PageHeader } from '../shared/components/PageHeader';
 import { MonitorData, MonitorSummary } from '../features/monitor/components/MonitorData';
-import { MetricsLink } from '../features/monitor/components/TrainingLog';
+import { MetricsLink, TrainingLog } from '../features/monitor/components/TrainingLog';
 import { useRuntimeCommands } from '../app/providers/RuntimeProvider';
 
 export interface MonitorPanelProps {
@@ -54,6 +54,13 @@ export const MonitorPanel = memo(function MonitorPanel({
       <div className="action-bar"><span className="field-hint">以下为实验级分析，不保证属于某一次训练。</span>
         <Button size="sm" onClick={() => viewTraining(trainRunId || undefined)}>查看训练日志</Button>
       </div>
+      <TrainingLog
+        trainRunId={trainRunId}
+        trainRunning={trainRunning}
+        trainLog={trainLog}
+        aglOnline={aglOnline}
+        onRefreshLog={onRefreshLog}
+      />
       <div hidden={hideData} className={hideData ? 'hidden' : 'contents'}>
         <MonitorData model={model} aglOnline={aglOnline} visible={visible && !hideData} />
       </div>

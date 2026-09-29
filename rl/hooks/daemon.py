@@ -81,6 +81,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
         self._branch_local_count_total = 0
         self._enqueued_expansion_parents: set = set()
         self._incremental_branch_total = 0
+        self._expansion_enqueue_failures = 0
         self._tree_recorder = RolloutTreeRecorder(tree_context) if self.mode == "v1" else None
         if self.mode != "v1" and tree_context:
             logging.getLogger(__name__).warning("RolloutTree recording requires Store v1; mode=%s", self.mode)
@@ -190,12 +191,19 @@ class TirAgentModeDaemon(AgentModeDaemon):
             and self._expand_in_runner()
             and self._ready_batch()
         ):
-            try:
-                n_inc = await self._enqueue_expansion_for_parent(rollout.rollout_id)
-                self._incremental_branch_total += int(n_inc or 0)
-            except Exception:
-                pass
+            await self._enqueue_expansion_safely(rollout.rollout_id)
         return result_rollout
+
+    async def _enqueue_expansion_safely(self, rollout_id: str) -> None:
+        """Materialize one parent's branches. Failures are counted, not dropped."""
+        try:
+            n_inc = await self._enqueue_expansion_for_parent(rollout_id)
+            self._incremental_branch_total += int(n_inc or 0)
+        except Exception:
+            self._expansion_enqueue_failures = int(getattr(self, "_expansion_enqueue_failures", 0)) + 1
+            logging.getLogger(__name__).exception(
+                "expansion enqueue failed rollout=%s", rollout_id
+            )
 
     async def _async_set_up(self, data: Dict[str, Any], server_addresses: List[str], is_train: bool = True):
         model = str(self.train_information.get("model") or "")
@@ -827,6 +835,9 @@ class TirAgentModeDaemon(AgentModeDaemon):
         data_metrics["training/branch_local_count"] = float(self._branch_local_count_total)
         data_metrics["training/store_enqueue_branch_count"] = float(self._store_enqueue_branch_count)
         data_metrics["training/incremental_branch_count"] = float(self._incremental_branch_total)
+        data_metrics["training/expansion_enqueue_failures"] = float(
+            getattr(self, "_expansion_enqueue_failures", 0)
+        )
         # P3: loss/batch event for real-time harness (marker frame on stdout)
         try:
             emit_rollout_tree_event(
@@ -853,3 +864,4 @@ class TirAgentModeDaemon(AgentModeDaemon):
         self._branch_local_count_total = 0
         self._enqueued_expansion_parents.clear()
         self._incremental_branch_total = 0
+        self._expansion_enqueue_failures = 0

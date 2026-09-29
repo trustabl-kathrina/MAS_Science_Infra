@@ -64,6 +64,9 @@ sampling:
   group_n: 4
   beam_size: 2
   initial_rollouts: 2
+  max_branch_depth: 2
+  expand_in_runner: true
+  barriers: []
   sites:
   - id: site_after_tool_hub_execute_python
     enabled: true
@@ -75,10 +78,10 @@ sampling:
     when: first
     nth: 1
     gate:
-      type: entropy_delta
+      type: always
       params: {}
     fork:
-      beam_size: 2
+      beam_size: 3
       share_observation: true
       resume_mode: messages
       probe_max_tokens: 128
@@ -87,5 +90,52 @@ sampling:
       p_plus: 0.8
       k_min: 2
       epsilon_f: 0.001
+    priority: 10
+  - id: site_tool_result_hub_tool_id_wikipedia_search
+    enabled: true
+    anchor:
+      kind: after_tool
+      agent_id: hub
+      tool_id: wikipedia_search
+      edge_id: null
+    when: every
+    nth: 1
+    gate:
+      type: always
+      params: {}
+    fork:
+      share_observation: true
+      resume_mode: messages
+      probe_max_tokens: 128
+    reward:
+      scheme: scalar_grpo
+      p_plus: 0.8
+      k_min: 2
+      epsilon_f: 0.001
+      dead_end_backprop: 1
+    priority: 10
+  - id: site_tool_result_hub_tool_id_web_search
+    enabled: true
+    anchor:
+      kind: after_tool
+      agent_id: hub
+      tool_id: web_search
+      edge_id: null
+    when: every
+    nth: 1
+    gate:
+      type: always
+      params: {}
+    fork:
+      share_observation: true
+      resume_mode: messages
+      probe_max_tokens: 128
+      beam_size: 1
+    reward:
+      scheme: scalar_grpo
+      p_plus: 0.8
+      k_min: 2
+      epsilon_f: 0.001
+      dead_end_backprop: 1
     priority: 10
 routers: []

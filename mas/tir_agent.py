@@ -530,19 +530,19 @@ class TirAgent:
                 try:
                     response = llm.bind(max_tokens=64).invoke(messages)
                 except Exception as e2:
-                    failed = True
                     if recorder and node_id:
                         recorder.request_error(node_id, e2)
+                        recorder.finish(node_id, None, failed=True)
                     log_first_model_failure(e2, self.endpoint, self.model_name)
                     logger.error("LLM invoke failed after context retry: %s", e2)
-                    response = AIMessage(content="<answer>None</answer>")
+                    raise
             else:
-                failed = True
                 if recorder and node_id:
                     recorder.request_error(node_id, e)
+                    recorder.finish(node_id, None, failed=True)
                 log_first_model_failure(e, self.endpoint, self.model_name)
                 logger.error("LLM invoke failed: %s", e)
-                response = AIMessage(content="<answer>None</answer>")
+                raise
 
         h = estimate_turn_entropy(response, max_tokens=self.entropy_tokens)
         if recorder and node_id:

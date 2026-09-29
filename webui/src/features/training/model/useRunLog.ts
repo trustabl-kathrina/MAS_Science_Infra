@@ -30,6 +30,15 @@ export function useRunLog(experimentId: string, runId: string, active: boolean) 
     return () => document.removeEventListener('visibilitychange', changed);
   }, []);
   useEffect(() => {
+    buffer.current = {
+      offset: undefined, generation: '', lines: [], chars: 0, nextId: 0,
+      partial: false, clipped: false, trimmed: false,
+    };
+    setLines([]);
+    setError('');
+    setTrimmed(false);
+  }, [experimentId, runId]);
+  useEffect(() => {
     if (!active || !foreground) { setConnection('已暂停读取'); return; }
     const data = buffer.current;
     const controller = new AbortController();

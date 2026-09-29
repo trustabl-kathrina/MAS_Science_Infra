@@ -19,6 +19,7 @@
   gpu-compiler  GPU 编译: compiler/compiled collect/api
   verifier      Verifier: registry/hop
   e2e           端到端: C1-C8 全链路
+  functional    功能合同: workflow/tool/harness/RL/运行态 UI
   frontend      前端 vitest: trajectoryGraph (含 router 节点)
   smoke         无 GPU 冒烟: doctor→层依赖→mock 采集→diagnose→HTML
 
@@ -68,6 +69,16 @@ FEATURES: dict[str, tuple[list[str], str]] = {
     "gpu-compiler": (["test_stage11_gpu_compiler"], "GPU 编译: compiler/compiled collect/api"),
     "verifier": (["test_stage8_verifier"], "Verifier: registry/hop 反馈"),
     "e2e": (["test_stage7_e2e"], "端到端 C1-C8: 采集→reward→诊断→fork→CLI"),
+    "functional": (
+        [
+            "test_functional_workflow",
+            "test_functional_tools",
+            "test_functional_harness",
+            "test_functional_rl",
+            "test_functional_runtime_ui",
+        ],
+        "功能合同: workflow 通信/tool/harness consume/RL reward 与扩张/SSE 与 Monitor 隔离",
+    ),
     "frontend": ([], "前端 vitest: trajectoryGraph 轨迹 + router 节点候选（webui npm run test:traj）"),
     "smoke": ([], "无 GPU 冒烟: doctor→层依赖→mock 采集→diagnose→dashboard（等价 ./run.sh smoke）"),
 }
@@ -88,6 +99,7 @@ UNIT_FEATURES = [
     "gpu-compiler",
     "verifier",
     "e2e",
+    "functional",
 ]
 
 

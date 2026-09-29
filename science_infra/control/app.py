@@ -97,7 +97,7 @@ def create_app() -> FastAPI:
     async def lifespan(_app: FastAPI):
         import asyncio
 
-        BUS.bind_loop(asyncio.get_event_loop())
+        BUS.bind_loop(asyncio.get_running_loop())
         ensure_experiment("demo")
         yield
 
@@ -468,6 +468,9 @@ def create_app() -> FastAPI:
         async def gen():
             # P3: tail active train/collect subprocess stdout for marked
             # rollout-tree frames and republish them as SSE `rollout_tree` events.
+            # Drain on a timer so a quiet bus still forwards tree frames.
+            import asyncio
+
             tail_state = {"offset": 0, "run_id": ""}
 
             def _drain_tree_frames() -> None:
@@ -495,9 +498,22 @@ def create_app() -> FastAPI:
                         continue
                     BUS.publish(experiment_id, "rollout_tree", payload)
 
-            async for payload in BUS.subscribe(experiment_id):
-                _drain_tree_frames()
-                yield format_sse(payload)
+            agen = BUS.subscribe(experiment_id).__aiter__()
+            pending = asyncio.create_task(agen.__anext__())
+            try:
+                while True:
+                    done, _waiting = await asyncio.wait({pending}, timeout=0.5)
+                    _drain_tree_frames()
+                    if pending not in done:
+                        done, _waiting = await asyncio.wait({pending}, timeout=0)
+                    if pending not in done:
+                        continue
+                    payload = pending.result()
+                    yield format_sse(payload)
+                    pending = asyncio.create_task(agen.__anext__())
+            finally:
+                pending.cancel()
+                await agen.aclose()
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 

@@ -8,6 +8,7 @@ import { isCanvasPanel, type PanelId, type ResourceCategory, type SampleSelectio
 import type { SettingsSection } from '../../features/settings/model/sections';
 import { RunConsole } from '../../features/mas/components/RunConsole';
 import { TrainingHistory } from '../../features/training/components/TrainingHistory';
+import { useRunLog } from '../../features/training/model/useRunLog';
 
 const Experiment = memo(ExperimentPanel);
 const Mas = memo(MASPanel);
@@ -27,10 +28,14 @@ const MonitorConnection = memo(function MonitorConnection({ expId, visible }: { 
   const { data, refresh } = useTraining();
   const agl = useAgl();
   const monitor = useMonitor();
+  const runId = data?.runId ?? null;
+  const live = useRunLog(expId, runId || '', visible && Boolean(runId));
+  const trainLog = live.lines.map(line => line.text).join('\n');
   return <MonitorPanel expId={expId} visible={visible}
     model={monitor.data} error={monitor.error} loading={monitor.loading} onRefresh={monitor.refresh}
-    trainRunId={data?.runId ?? null} trainRunning={data?.running ?? false} trainLog={data?.log ?? ''}
-    aglOnline={!!agl.data?.ok && !agl.error} onRefreshLog={refresh} />;
+    trainRunId={runId} trainRunning={data?.running ?? false} trainLog={trainLog}
+    aglOnline={!!agl.data?.ok && !agl.error}
+    onRefreshLog={async () => { live.reconnect(); await refresh(); }} />;
 });
 
 export const WorkspacePanels = memo(function WorkspacePanels({ active, visible, bundle, meta, onReload, setExpId, onWorkspace, settings, onResources, onSettings, selectedResource, resourcePurpose, consoleRun, trainingConsole, samples, onSamples, onChangePanel }: {

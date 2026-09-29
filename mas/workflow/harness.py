@@ -169,6 +169,11 @@ class CognitiveConvergenceDiagnoser:
             )
         return out
 
+    def consume(self, event: Dict[str, Any]) -> Optional[Hypothesis]:
+        """Offline signature matching stays on diagnose(); the stream is a no-op."""
+        del event
+        return None
+
 
 class RewardHackingDiagnoser:
     """Thin RL harness: high reward vs broken format / ERROR. No external Judge LLM."""
@@ -201,6 +206,11 @@ class RewardHackingDiagnoser:
                     )
                 )
         return out
+
+    def consume(self, event: Dict[str, Any]) -> Optional[Hypothesis]:
+        """Offline reward/format checks stay on diagnose(); the stream is a no-op."""
+        del event
+        return None
 
 
 class RewardHackingMonitor:
@@ -335,6 +345,10 @@ class StubDiagnoser:
         del ctx
         return []
 
+    def consume(self, event: Dict[str, Any]) -> Optional[Hypothesis]:
+        del event
+        return None
+
 
 class DiagnoserRegistry:
     def __init__(self) -> None:
@@ -353,6 +367,22 @@ class DiagnoserRegistry:
         out: List[Hypothesis] = []
         for name in keys:
             out.extend(self.get(name).diagnose(ctx))
+        return out
+
+    def consume(self, event: Dict[str, Any]) -> List[Hypothesis]:
+        """Fan a streamed event out to plugins that implement consume."""
+        out: List[Hypothesis] = []
+        for plugin in self._plugins.values():
+            fn = getattr(plugin, "consume", None)
+            if not callable(fn):
+                continue
+            try:
+                hit = fn(event)
+            except Exception:
+                logger.exception("diagnoser %s consume failed", getattr(plugin, "name", "?"))
+                continue
+            if hit is not None:
+                out.append(hit)
         return out
 
 

@@ -1,213 +1,243 @@
-# Agent Science Infra
+# Science Studio
 
-面向 **Agent RL 研究**的多智能体系统（MAS）科学基础设施：把「多 Agent 工作流采样 → 分支 Rollout → GRPO 族训练（ARPO/AEPO/RAE）→ 实时诊断」做成一条可复现、可观测、可声明的实验链路，训练后端复用 [Agent-Lightning](https://github.com/qihoo360/agent-lightning)（AGL）+ VERL。
+Science Studio 是多智能体强化学习实验的控制面。一个实验是 `experiments/<id>/` 下的五份 YAML（experiment / llm / workflow / rl / harness），界面和命令行读写同一份文件。画布编辑 Agent 工作流和分支采样站点，不生成 LangGraph 代码。
 
-## 项目状态
+采样站点用 `BranchSite` 声明锚点、门控和 fork 预算，写入 `workflow.yaml`。训练算法是 GRPO 族：grpo / arpo / aepo / appo / rae。第一波独立采样，第二波从断点续写并补齐到 `group_n`。训练进行时，Runs 里可以打开采样树，Monitor 显示实验级 reward 曲线和当前 run 的 stdout。采集可以单独运行，不启动训练、不占用训练 GPU。
 
-| 项 | 状态 |
-|----|------|
-| 阶段 | 研究原型（v0.1.0） |
-| 更新日期 | 2026-09-20 |
-| 已端到端跑通 | mock/live Collect → reward → Harness 诊断 → ARPO 训练（真实 LLM + GRPO 更新）→ RolloutTree 落盘 + UI 可视化 |
-| 测试 | `./run.sh feature-test --all`：15 功能域 154 例全绿（2026-09-20 实测） |
+训练运行时使用 [Agent-Lightning](https://github.com/qihoo360/agent-lightning) 与 VERL。本仓库不修改 `agent-lightning/` 的源码。Collect 走编译后的多 Agent 图；当前训练热路径仍是单 hub TirAgent，加上画布上声明的分支采样。
 
-## 目录
+更新日期：2026-09-29。
 
-- [为什么 / 解决什么问题](#为什么--解决什么问题)
-- [核心特性](#核心特性)
-- [架构总览](#架构总览)
-- [快速开始](#快速开始)
-- [使用方式](#使用方式)
-- [项目结构](#项目结构)
-- [测试与验收](#测试与验收)
-- [文档索引](#文档索引)
-- [开发约定](#开发约定)
-- [常见问题](#常见问题)
+## 界面
 
-## 为什么 / 解决什么问题
+首页列出实验。模型与数据是独立页。进入实验后，顶栏是返回、实验名、GPU、保存实验、开始训练。已有活动训练时，这个按钮变成「查看训练」。
 
-Agent RL 实验的三个痛点，本项目逐一给出工程答案：
+工作区菜单：Experiment、LLM、MAS、RL、Harness、Monitor、Runs。LLM、RL、Harness 是画布上的设置区，和 MAS 共用同一份未保存草稿。切菜单不会丢掉草稿；换实验才会用磁盘上的 YAML 覆盖。保存动作是顶栏的「保存实验」。
 
-1. **不可复现**：多 Agent 工作流散落在脚本里。→ 五层 YAML 实验 bundle（experiment / llm / workflow / rl / harness），一切配置落盘、seed 固定、CLI 与 UI 读写同一份真源。
-2. **分支采样语义混乱**：「在哪一步 fork、fork 几条、算谁的 advantage」全靠改代码。→ 声明式 `BranchSite`（5 anchor × 9 gate）写进 `workflow.yaml`，ActiveSet/Daemon 自动执行两波采样，RolloutTree 记录真实 rollout id 树。
-3. **训练是黑盒**：GRPO 族训练过程看不见。→ Control UI 七页 + SSE 实时事件 + RolloutTree 可视化 + Harness 实时诊断（log_error / loss 波动 / 认知收敛 / reward hacking）。
+下面的截图来自本机正在运行的 Science Studio（实验 `arpo_e2e`）。
 
-## 核心特性
+实验首页。
 
-- **分层架构与硬边界**：`science_infra`（Control/UI）→ `mas`（工作流/采样，禁 import AGL）→ `rl`（训练 overlay/hooks）→ AGL（黑盒，仅 `mas/train_tir_agent.py` 一处 import）
-- **七页 Control UI**：Experiment / LLM / MAS 画布 / RL / RolloutTree / Harness / Monitor（FastAPI + React + SSE，`/docs` 全量 API）
-- **声明式分支采样**：`BranchSite` = anchor（after_tool / after_agent_turn / after_verifier / on_token / after_edge）× gate（entropy_delta / dual_entropy / always / tool_ok / … 共 9 种）× fork 预算，UI 小窗编辑、API 持久化回归验证
-- **GRPO 族算法**：grpo / arpo / aepo / appo / rae 六算法 overlay；两波采样（initial 独立 + branch resume + global 补齐凑满 group_n）；RAE verdict / k-hop credit assignment
-- **真实 rollout id 的 RolloutTree**：Daemon 训练期把分支树落盘为 `mas/.local_expansion/tree_*.json`，React Flow 分层渲染 + SSE `node_added` 实时帧
-- **agent 化工作流（schema 0.3）**：kind/profile/routers 合同、RouterSpec 适配器、blank agent tool-call shell（`blank:<id>`）、两层 memory、per-agent window_events
-- **实时 Harness 诊断**：训练 stdout JSONL 帧 → SSE → `Diagnoser.consume`；RewardHackingMonitor leave-one-out z-score
+![实验首页](docs/images/home.png)
 
-## 架构总览
+模型与数据。推理连接和训练权重在这里登记，密钥写入 `.secrets.env`，不回显。
+
+![模型与数据](docs/images/resources.png)
+
+工作区。左侧是模型、数据和训练策略，画布上是 Agent 与工具。Branch Site 写在对应工具节点上。
+
+![MAS 工作区](docs/images/workspace.png)
+
+Runs 中一次已完成 ARPO 运行的采样结果。右侧是该题的执行树，分支来自 `after_tool` 站点。
+
+![采样结果](docs/images/samples.png)
+
+Monitor。reward 曲线按实验聚合；训练日志绑定当前 run。下面这张图里没有活动训练，所以日志区为空，曲线来自已结束的训练。
+
+![Monitor](docs/images/monitor.png)
+
+训练记录。每条 run 可以打开采样结果、本次配置或日志。
+
+![训练记录](docs/images/runs.png)
+
+训练控制台，显示该 run 的 stdout。
+
+![训练控制台](docs/images/console.png)
+
+工作区菜单：
+
+| 菜单 | 内容 |
+|------|------|
+| Experiment | 实验名、seed |
+| LLM | 推理连接：API、本地 vLLM，或训练注入的 endpoint |
+| MAS | Agent 图，采样模式、`group_n`、`beam_size` 和分支站点 |
+| RL | 算法、每题条数、数据、训练策略、GPU 档位 |
+| Harness | 诊断插件 |
+| Monitor | 实验级 reward 曲线，以及当前 run 的 stdout |
+| Runs | 训练记录。采样结果从这里进入 |
 
 ```mermaid
-flowchart TB
-  subgraph ctrl [Control 层：science_infra/ + webui/]
-    ui[React 七页<br/>画布编辑 · Sampling 小窗 · RolloutTree] --> api[FastAPI REST/SSE<br/>五层 YAML bundle 读写]
-  end
-  subgraph mas [MAS 层：mas/（禁 import AGL）]
-    spec[WorkflowSpec → Compiler → TirAgent/LangGraph] --> traj[Trajectory/Event]
-    traj --> reward[rl.rewards 权威 outcome]
-    spec --> activeset[BranchSite / ActiveSet 树分支规划]
-  end
-  subgraph rl [RL 层：rl/]
-    train_signal[TrainSignal / LossSpec / overlay] --> hooks[Daemon hooks<br/>两波采样 enqueue · RolloutTree 落盘 · advantage]
-  end
-  subgraph agl [AGL 黑盒：agent-lightning + VERL]
-    trainer[LitAgent / Trainer / LightningStore / TensorBoard]
-  end
-  api -->|Collect 同步| spec
-  api -->|Train 子进程| train_signal
-  hooks -->|task/rollout/resume| trainer
-  trainer -->|triplets/token| hooks
-  reward --> train_signal
+flowchart LR
+  home[实验首页] --> resources[模型与数据]
+  home --> workspace[MAS 工作区]
+  workspace --> save[保存实验]
+  save --> train[开始训练]
+  train --> console[训练日志]
+  console --> samples[采样结果]
+  workspace --> monitor[Monitor]
+  workspace --> harness[Harness]
 ```
 
-详细分层说明与代码级地图：[docs/TECHNICAL_FRAMEWORK.md](docs/TECHNICAL_FRAMEWORK.md)。
+## 怎么跑通一次实验
 
-## 快速开始
+界面和命令行读写同一份 YAML。Collect 走编译后的多 Agent 图。当前训练热路径是单 hub TirAgent，加上 workflow 里声明的分支采样。
 
-### 前置依赖
-
-| 依赖 | 说明 |
-|------|------|
-| GPU + `nvidia-smi` | 仅训练需要（A800 单卡实测可跑 Qwen3-4B） |
-| Python 3.11 + [uv](https://docs.astral.sh/uv/) | 创建仓库 `.venv`（勿用 miniconda 裸环境） |
-| Node.js + npm | 构建 `webui/dist` |
-| `data/{train,val}.parquet` | GSM8K 数据；**当前仓库内为 5 行小样本**（端到端快速验证用；全量备份 `data/*.full.parquet.bak`） |
-| 模型权重 | `LLM/Qwen3-4B`（local LLM 与训练 `model_path`） |
-| API 配置（可选） | `.env`：`OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL`（Collect live / 多专家测试用） |
-
-### 三步跑起来
+### 在界面里
 
 ```bash
-# 1. 环境（首次；装 uv 依赖 + editable 安装 science-infra）
-bash scripts/setup_uv_env.sh
-
-# 2. 启动 Control UI（首次自动 npm build webui）
-./run.sh ui --daemon        # 日志：artifacts/run_smoke/ui.log
-
-# 3. 浏览器打开
-#    http://127.0.0.1:8787/    （API 文档 /docs）
+bash scripts/setup_uv_env.sh   # 首次
+./run.sh ui --daemon           # http://127.0.0.1:8787/
 ```
 
-AutoDL 等公网入口固定在 6006 的场景，用转发器把公网 6006 转到容器 8787（支持 SSE 透传）：
+1. 首页打开实验（例如 `arpo_e2e`），或新建一个。
+2. 「模型与数据」里绑定推理模型和训练集。训练权重在 RL 设置的 `model_path`。
+3. 打开 MAS：mode=`arpo`，`group_n=4`，`beam_size=2`，启用 `after_agent_turn` 和 `after_tool` 两个站点。
+4. 打开 RL 设置：algo=`arpo`，每题采样条数=`4`，profile 按机器选择（单卡用 `fast`）。
+5. 顶栏勾上 GPU，点「保存实验」，再点「开始训练」。
+6. 「查看训练」看当前 run 的 stdout。Runs 里点「采样结果」看树是否在长。Monitor 看实验级 reward，日志区只显示这一次 run。
+
+完整点击说明和验收表：[docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md)。
+
+公网入口固定在 6006 时，用仓库里的转发器把 6006 转到容器 8787（SSE 会透传）：
 
 ```bash
 nohup python3 scripts/ui_public_forwarder.py --listen 6006 --target 127.0.0.1:8787 \
   > artifacts/ui_forwarder.log 2>&1 &
 ```
 
-建议用**外部浏览器**访问（IDE 内嵌 webview 有 HTTP/1.1 每域名 6 连接上限，SSE 长连接容易把 UI 请求饿死，详见手册 FAQ）。
+请用外部浏览器打开。IDE 内嵌 webview 对同一域名大约只有 6 条 HTTP/1.1 连接，SSE 容易把其余请求堵住。
 
-## 使用方式
-
-### CLI（`science-infra`）
+### 在命令行里
 
 ```bash
-science-infra doctor                                  # 环境/AGL/GPU 探测
-science-infra collect --mock --n 2 --out /tmp/traj.json
-science-infra diagnose /tmp/traj.json                 # Harness 四插件
+science-infra doctor
+science-infra collect --mock --n 2 --out /tmp/traj.json   # 不占训练 GPU
+science-infra diagnose /tmp/traj.json
 science-infra status /tmp/traj.json --html /tmp/status.html
-science-infra serve --port 8787                       # 即 ./run.sh ui
+./run.sh train fast --algo arpo --rl-yaml experiments/arpo_e2e/rl.yaml
 ```
 
-### `run.sh` 子命令
+`./run.sh ui` 就是 `science-infra serve`。mock 采集走编译图；上面的 `train` 走单 hub 训练热路径。
+
+## 架构
+
+```mermaid
+flowchart TB
+  subgraph ctrl [Science Studio]
+    ui[实验 · 画布 · 采样结果 · Monitor] --> api[FastAPI REST/SSE]
+  end
+  subgraph mas [MAS]
+    spec[YAML 到 Compiler] --> traj[Trajectory]
+    spec --> sites[BranchSite / ActiveSet]
+  end
+  subgraph rl [RL hooks]
+    hooks[两波采样 · advantage · 树落盘]
+  end
+  subgraph agl [Agent-Lightning 与 VERL]
+    trainer[LitAgent / Trainer / LightningStore]
+  end
+  api -->|Collect 编译图| spec
+  api -->|Train 子进程| hooks
+  hooks --> trainer
+  traj --> hooks
+```
+
+分层说明：[docs/TECHNICAL_FRAMEWORK.md](docs/TECHNICAL_FRAMEWORK.md)。
+
+## 快速开始
+
+| 依赖 | 说明 |
+|------|------|
+| GPU + `nvidia-smi` | 只在训练时需要 |
+| Python 3.11 + [uv](https://docs.astral.sh/uv/) | 仓库 `.venv` |
+| Node.js + npm | 构建 `webui/dist` |
+| `data/{train,val}.parquet` | 仓库内是 5 行 GSM8K 小样本；全量在 `data/*.full.parquet.bak` |
+| `LLM/Qwen3-4B` | 本地推理与训练 `model_path` |
+| `.env`（可选） | `OPENAI_API_KEY` / `OPENAI_API_BASE` / `OPENAI_MODEL`，给 live Collect 用 |
+
+```bash
+bash scripts/setup_uv_env.sh
+./run.sh ui --daemon
+# http://127.0.0.1:8787/    API 文档 /docs
+```
+
+### `run.sh`
 
 | 命令 | 作用 |
 |------|------|
-| `./run.sh smoke` | 无 GPU 冒烟：doctor→层依赖红线→mock 采集→diagnose→dashboard |
-| `./run.sh live-api` / `live-api-data` | API LLM 单题 / 从 parquet 抽题跑 TirAgent（需 `.env`） |
-| `./run.sh live-vllm` | 本地 vLLM（LLM→tool→答案→reward） |
-| `./run.sh ui [--daemon|--stop|--rebuild]` | Control UI 启停 |
-| `./run.sh train [fast] --algo arpo --rl-yaml experiments/arpo_e2e/rl.yaml` | CLI 直接训练 |
-| `./run.sh feature-test [--list\|<域>\|--all]` | 15 功能域分组测试 |
-| `./run.sh branch-ui-test [--train]` | 分支采样站点 + Collect/Train wiring 验收 |
-| `./run.sh arpo-train-test` | ARPO 端到端 4 阶段验收（GPU） |
-| `./run.sh traj-test` | 前端轨迹推导 vitest |
+| `./run.sh smoke` | 无 GPU：doctor、依赖红线、mock 采集、diagnose、dashboard |
+| `./run.sh live-api` / `live-api-data` | API LLM 单题，或从 parquet 抽题 |
+| `./run.sh live-vllm` | 本地 vLLM：工具调用、答案、reward |
+| `./run.sh ui [--daemon\|--stop\|--rebuild]` | 启停 Science Studio |
+| `./run.sh train [fast] --algo arpo --rl-yaml experiments/arpo_e2e/rl.yaml` | 命令行训练 |
+| `./run.sh feature-test [--list\|<域>\|--all]` | 功能域测试。全量数字以 `--list` 为准 |
+| `./run.sh branch-ui-test [--train]` | 采样站点持久化；`--train` 再扫 expansion |
+| `./run.sh arpo-train-test` | ARPO 端到端验收（需要 GPU） |
+| `./run.sh traj-test` | 前端轨迹 vitest |
 
-### Control UI 跑 ARPO（最短路径）
-
-1. 选实验 `arpo_e2e`（合同摘要确认 `入口=hub · 可训=[hub]`）
-2. MAS 页：Rollout Sampling 小窗 mode=`arpo`、group_n=`4`、beam_size=`2`，勾 `after_agent_turn` + `after_tool` 双站点 → 保存 workflow.yaml
-3. RL 页：algo=`arpo`、每题采样条数=`4`、profile=`fast` → 保存超参
-4. 顶栏勾 GPU → 点 **Train**
-5. RolloutTree 页看树实时生长（`node_added` LIVE chip）；Monitor 页看 reward 曲线
-
-完整步骤与验收判据：[docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md) §5。
+`functional` 域 19 例已通过（工作流、工具、Harness、RL、界面运行态）。不要把历史的「15 域 154 例」当成当前全量。
 
 ## 项目结构
 
 ```text
-├── science_infra/       # Control 层：FastAPI REST/SSE + CLI + 实验 bundle（不训模型）
-├── webui/               # React + React Flow 前端（七页）
-├── mas/                 # ★ MAS 层：workflow 合同/Compiler/TirAgent/ActiveSet/Harness（禁 import AGL）
-│   ├── tir_agent.py     # LangGraph ReAct agent（routers/blank shell/window_events）
-│   ├── train_tir_agent.py  # 训练入口（唯一 import agl 的 MAS 文件）
-│   └── tests/           # unittest 套件
-├── rl/                  # RL overlay 层：rewards/loss/train_signal/hooks（daemon/advantage/rae）
-├── experiments/         # 实验配置真源：<id>/{experiment,llm,workflow,rl,harness}.yaml
-├── scripts/             # 验收脚本：feature_test / arpo_train_verify / rollout_tree_verify / ui_public_forwarder …
-├── data/                # GSM8K parquet（当前为 5 行小样本，全量备份 *.full.parquet.bak）
-├── LLM/                 # 本地模型权重（Qwen3-4B）
-├── agent-lightning/     # AGL 框架（git submodule，黑盒）
-├── run.sh               # 仓库统一入口脚本
-└── docs/                # 全部设计与验收文档（见下方索引）
+├── science_infra/       # FastAPI、SSE、CLI、实验 bundle
+├── webui/               # Science Studio（React + React Flow）
+├── mas/                 # 工作流合同、Compiler、TirAgent、ActiveSet、Harness
+│   ├── tir_agent.py     # LangGraph ReAct
+│   ├── train_tir_agent.py  # 唯一 import Agent-Lightning 的 MAS 入口
+│   └── tests/
+├── rl/                  # reward、TrainSignal、Daemon / advantage hooks
+├── experiments/         # <id>/{experiment,llm,workflow,rl,harness}.yaml
+├── scripts/
+├── data/                # GSM8K parquet（当前为小样本）
+├── LLM/
+├── agent-lightning/     # 训练运行时，黑盒 submodule
+├── run.sh
+└── docs/
 ```
 
-## 测试与验收
+## 测试
 
 ```bash
-./run.sh feature-test --list    # 16 个功能域一览（--all 跑 15 域 154 例，smoke 域单列）
-./run.sh feature-test branch    # 只测分支采样域
-./run.sh smoke                  # 无 GPU 冒烟
+./run.sh feature-test --list
+./run.sh feature-test functional
+./run.sh smoke
 ```
 
-| 验收脚本 | 覆盖 |
-|----------|------|
-| `./run.sh arpo-train-test`（`scripts/arpo_train_verify.py`） | ARPO 端到端：启动→轮询 metrics→树落盘→扩展性（2026-09-20 5 样本全 PASS：branch_local=6、6 棵树、step ≈237s，run `384d1927458a`） |
-| `scripts/rollout_tree_verify.py` | RolloutTree 契约 + API + 节点徽标（B1–B5，5/5 PASS） |
-| `./run.sh branch-ui-test` | 采样站点持久化 + Collect wiring（`--train` 短训扫 expansion） |
+| 验收 | 覆盖 |
+|------|------|
+| `./run.sh arpo-train-test` | ARPO：启动、metrics、树落盘。2026-09-20 的 5 样本 run `384d1927458a`：`branch_local=6`，6 棵树，单 step 约 237s |
+| `scripts/rollout_tree_verify.py` | 树契约、API、节点徽标 |
+| `./run.sh branch-ui-test` | 站点写回 workflow；`--train` 扫 expansion |
 
-测试矩阵与功能域详解：[docs/MAS_AGENT_FRAMEWORK_TEST.md](docs/MAS_AGENT_FRAMEWORK_TEST.md)、[docs/ARPO_TRAIN_TEST.md](docs/ARPO_TRAIN_TEST.md)。
+## 文档
 
-## 文档索引
-
-| 文档 | 读者 / 内容 |
-|------|------------|
-| [docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md) | **使用者**：七页操作、参数教程、ARPO 端到端教程、FAQ |
-| [docs/TECHNICAL_FRAMEWORK.md](docs/TECHNICAL_FRAMEWORK.md) | **开发者**：当前代码框架、合同、实现差距、路线图（权威） |
-| [docs/CONTROL_UI.md](docs/CONTROL_UI.md) | Control 面落地说明与 API 一览 |
-| [docs/ARPO_TRAIN_TEST.md](docs/ARPO_TRAIN_TEST.md) | ARPO 训练验收手册（CLI 视角 + 实测结果） |
-| [docs/ROLLOUT_SAMPLING.md](docs/ROLLOUT_SAMPLING.md) | 采样语义（independent/branch/beam、任务池模型） |
-| [docs/SAMPLING_ARPO_APPO.md](docs/SAMPLING_ARPO_APPO.md) | 官方 ARPO/APPO 与 MAS 机制对照 |
-| [docs/BRANCH_SITE_DESIGN.md](docs/BRANCH_SITE_DESIGN.md) | BranchSite 合同、RAE reward 设计 |
-| [docs/NEW_FRAMEWORK_DESIGN.md](docs/NEW_FRAMEWORK_DESIGN.md) | v2 最优架构（P0–P3 分期） |
-| [docs/MAS_AGENT_FRAMEWORK_TEST.md](docs/MAS_AGENT_FRAMEWORK_TEST.md) | agent 化架构说明 + 测试矩阵 |
-| [design.md](design.md) | 产品原则 |
+| 文档 | 内容 |
+|------|------|
+| [docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md) | 界面操作、参数、ARPO 点击路径、FAQ |
+| [docs/TECHNICAL_FRAMEWORK.md](docs/TECHNICAL_FRAMEWORK.md) | 代码框架、合同、已知差距 |
+| [docs/CONTROL_UI.md](docs/CONTROL_UI.md) | Control API |
+| [docs/ARPO_TRAIN_TEST.md](docs/ARPO_TRAIN_TEST.md) | ARPO 验收 |
+| [docs/ROLLOUT_SAMPLING.md](docs/ROLLOUT_SAMPLING.md) | 采样语义 |
+| [docs/SAMPLING_ARPO_APPO.md](docs/SAMPLING_ARPO_APPO.md) | 与 ARPO / APPO 机制的对照 |
+| [docs/BRANCH_SITE_DESIGN.md](docs/BRANCH_SITE_DESIGN.md) | BranchSite 与 RAE |
+| [design.md](design.md) | 产品原则：层可独立、合同优先、插件化 |
 
 ## 开发约定
 
-**架构硬边界**（由 `mas/scripts/check_workflow_deps.py` 红线测试强制）：
+`mas/scripts/check_workflow_deps.py` 守住这些边界：
 
-1. `mas/workflow` **禁止 import AGL**；AGL 只在 `mas/train_tir_agent.py` 出现；
-2. 画布只产 YAML（React Flow → MASSpec），不生成代码；
-3. AGL 是黑盒：不 fork、不改 `agent-lightning/` 源码；
-4. rollout/resume/enqueue 协议字段保留（`role` / `resume_boundary` / `verdict_list`）。
+1. `mas/workflow` 不 import Agent-Lightning。AGL 只出现在 `mas/train_tir_agent.py`。
+2. 画布只产 YAML。
+3. 不改 `agent-lightning/` 源码。
+4. rollout / resume / enqueue 的协议字段保留：`role`、`resume_boundary`、`verdict_list`。
 
-**热更新双终端法**（改前端免重启）：终端 A `science-infra serve --port 8787`；终端 B `cd webui && npm run dev`（Vite 代理 `/api`）。
+改前端可以开两个终端：一个 `science-infra serve --port 8787`，一个 `cd webui && npm run dev`。改 Python 后要重启 UI：`./run.sh ui --stop && ./run.sh ui --daemon`。
 
-**改 Python 代码后必须重启 UI**：`./run.sh ui --stop && ./run.sh ui --daemon`——后端 palette、hooks、daemon 逻辑都是启动时加载。
+## 致谢
+
+训练运行时建立在这些工作之上。本仓库把它们当作黑盒或对照，不把上游实现复制进产品代码。
+
+- [Agent-Lightning](https://github.com/qihoo360/agent-lightning) 提供 LitAgent、Trainer 和 LightningStore。本仓库的 rollout、reward 发射和训练循环接在这套运行时上。
+- [VERL](https://github.com/volcengine/verl) 提供 GRPO 参数更新。算法 overlay 保持 `adv_estimator=grpo`，ARPO / AEPO / RAE 的差异在采样和 advantage 钩子里。
+- [LangGraph](https://github.com/langchain-ai/langgraph) 提供 ReAct 执行图：模型、工具、收口。
+- ARPO、AEPO 一类分支采样工作给出了「先独立采样、再从高熵位置续写」的问题定义。本仓库用 `BranchSite` 把站点、门控和 fork 预算声明出来，并在 Daemon 里做两波 enqueue。机制对照见 [docs/SAMPLING_ARPO_APPO.md](docs/SAMPLING_ARPO_APPO.md)。
 
 ## 常见问题
 
-- **Collect 绿了但没分支树？** Collect 不做树分支；真 branch 只在 Train Daemon（`tir_algo∈{arpo,aepo,rae}`）。见 [UI 手册 FAQ Q4](docs/UI_USER_MANUAL.md)。
-- **`branch_local_count` 恒 0？** 旧版 Daemon 在 super() 快照后才补写 expand 字段；2026-09-20 已修复（`_preinject_expand_fields`）。拉最新代码重启 UI。
-- **训练结束 Monitor 曲线消失？** 已修复：离线回落到 `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`，重启 UI 生效。
-- **RolloutTree 页转圈不出数据？** 多半是内嵌浏览器连接配额（SSE 占满 6 连接），换外部浏览器；API 层用 `curl /api/mas/rollout-trees` 验证。
+- 采集成功但没有分支树。Collect 不产生训练分支。真分支只在 `tir_algo` 为 arpo、aepo 或 rae 的训练里。到 Runs 的采样结果看。
+- `branch_local_count` 一直是 0。2026-09-20 起，expand 字段会在 Daemon 快照任务之前注入。拉最新代码并重启 UI。
+- 训练结束后 Monitor 曲线空了。实验级曲线会回落到 `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`。当前 run 的 stdout 在训练日志里，换 run 会清空上一份。
+- 采样结果一直转圈。先换外部浏览器，再用 `curl http://127.0.0.1:8787/api/mas/rollout-trees` 看 API 是否有树。
 
-更多见 [docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md) §6。
+更多见 [docs/UI_USER_MANUAL.md](docs/UI_USER_MANUAL.md)。

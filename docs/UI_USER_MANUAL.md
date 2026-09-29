@@ -1,8 +1,8 @@
-# Science Control UI 使用手册
+# Science Studio 使用手册
 
-日期：2026-09-20
+日期：2026-09-29
 
-本手册面向使用者，覆盖 **Science Control UI**（`webui/` + `science_infra/control/`）的全部模块介绍、参数设置教程，以及「跑一个典型例子：ARPO 训练」的端到端操作步骤。
+本手册面向使用者，覆盖 **Science Studio**（`webui/` + `science_infra/control/`）的界面、参数，以及「跑一个典型例子：ARPO 训练」的操作步骤。界面和命令行读写同一份五层 YAML。
 
 相关文档（本文不重复展开，需要时交叉引用）：
 
@@ -25,7 +25,7 @@
    - 3.3 [LLM 页](#33-llm-页)
    - 3.4 [MAS 页（画布 + Rollout Sampling 小窗）](#34-mas-页)
    - 3.5 [RL 页](#35-rl-页)
-   - 3.6 [RolloutTree 页](#36-rollouttree-页)
+   - 3.6 [Runs 与采样结果](#36-runs-与采样结果)
    - 3.7 [Harness 页](#37-harness-页)
    - 3.8 [Monitor 页](#38-monitor-页)
 4. [参数设置教程](#4-参数设置教程)
@@ -90,81 +90,81 @@ nohup python3 scripts/ui_public_forwarder.py --listen 6006 --target 127.0.0.1:87
 
 之后用 AutoDL 给出的公网地址（`https://xxx.gpushare.com:6006/` 形式）直接访问 Control UI，SSE 实时事件（`rollout_tree` / 状态 chip）也能正常透传。不用时 `pkill -f ui_public_forwarder` 并把 JupyterLab 映射恢复即可。
 
-> 注意：浏览器打开 UI 建议用**外部浏览器**（Chrome/Edge/Firefox）。IDE 内嵌 webview 有每域名 6 连接的 HTTP/1.1 硬上限，UI 两条 SSE 长连接 + RolloutTree 轮询容易把请求饿死（见 FAQ Q12）。
+> 浏览器请用外部浏览器（Chrome / Edge / Firefox）。IDE 内嵌 webview 对同一域名大约只有 6 条 HTTP/1.1 连接，SSE 长连接容易把其余请求堵住（见 FAQ Q12）。
 
 ---
 
 ## 2. 界面总览
 
-整体布局：左侧导航 + 顶部工具栏 + 主内容区 + 底部状态条。
+Science Studio 有两个入口：首页「实验」（`#/experiments`），以及独立页「模型与数据」（`#/resources/models`、`#/resources/datasets`）。打开一个实验后进入 MAS 工作区。顶栏放实验级操作，菜单在七个工作区之间切换。LLM、RL、Harness 是画布上的设置区，和 MAS 共用同一份未保存草稿。
 
 ```mermaid
-flowchart TB
-  subgraph layout [Science Studio 布局]
-    direction TB
-    topbar[顶栏：实验ID·seed·合同摘要·GPU芯片·Collect·Diagnose·Train]
-    subgraph body [主内容区]
-      direction LR
-      nav[左侧导航<br/>Experiment / LLM / MAS<br/>RL / RolloutTree / Harness / Monitor]
-      content[当前页面面板<br/>（keep-mounted 切页不丢草稿）]
-    end
-    banner[训练横幅：run_id · Stop · AGL Metrics（仅训练中显示）]
-    footer[底部状态条：running/idle · reward · 日志尾行 · Stop]
+flowchart LR
+  home[实验首页] --> resources[模型与数据]
+  home --> workspace[MAS 工作区]
+  subgraph header [工作区顶栏]
+    back[返回]
+    name[实验名]
+    gpu[GPU]
+    save[保存实验]
+    train[开始训练 / 查看训练]
   end
-  topbar --> body --> banner --> footer
-  nav <-.切换.-> content
+  subgraph menu [工作区菜单]
+    pages[Experiment · LLM · MAS · RL · Harness · Monitor · Runs]
+  end
+  workspace --> header
+  workspace --> menu
 ```
 
 ### 2.1 顶栏
 
-从左到右：
+| 控件 | 作用 |
+|------|------|
+| 返回 | 回到实验首页 |
+| 实验名 | 当前实验。换实验会丢弃未保存草稿，用磁盘上的五份 YAML 覆盖 |
+| GPU | 勾选训练占用的卡。保存时写入 `rl.devices.ids`，并同步 `trainer.n_gpus_per_node` |
+| 保存实验 | 把 Experiment、LLM、MAS、RL、Harness 的草稿一并写入五份 YAML |
+| 开始训练 | 尚无活动训练时显示。确认后停止本地 vLLM，再 `POST /api/rl/train` |
+| 查看训练 | 已有活动训练时替换「开始训练」，进入训练控制台 |
+| 模型与数据 | 打开资源页，绑定推理模型和数据集 |
+| 菜单 | 切换下面七个工作区 |
 
-| 元素 | 内容 | 来源 |
-|------|------|------|
-| 实验标识 | `<experiment_id>` + `seed=<n>` | `experiment.yaml` |
-| 合同摘要 | `入口=hub · 可训=[hub] · GPU=0 · n=2 · runners=1` | 汇总 workflow/rl |
-| GPU 芯片 | 每张卡一个按钮（`GPU 0 · 45%` 带利用率条），点选/取消 | `GET /api/gpus`；写入 `rl.devices.ids` |
-| Collect | mock 采集 1 条（会先保存 workflow） | `POST /api/mas/collect {mock:true}` |
-| Diagnose | 对最近 Collect 跑 Harness 诊断 | `POST /api/harness/diagnose` |
-| Train | 启动训练（有确认弹窗；会停本地 vLLM） | `POST /api/rl/train` |
-| 状态 chip | `train running` / 最近事件（如 `collect_done`） | SSE `/api/events` |
+采集和诊断不在顶栏。mock / live 采集走命令行 `science-infra collect`。对已有 `collect.json` 做诊断，在 Harness 里点「保存并诊断已有产物」，或运行 `science-infra diagnose`。
 
-合同摘要字段含义：
+这些字段仍在 YAML 里，只是不再做成顶栏摘要：
 
-- **入口**：`workflow.entry_agent` — Episode 从哪个 Agent 开始。
-- **可训**：`agents[].trainable=true` 的列表 — 训练时映射 `--active-agent`。
-- **GPU**：`rl.devices.ids` — 即 `CUDA_VISIBLE_DEVICES`。
-- **n**：每题采样条数（GRPO 组大小，`rollout.n`）。
-- **runners**：并行采集进程数 `n_runners`。
+- **入口**：`workflow.entry_agent`，在 MAS 上设采集入口。
+- **可训**：`agents[].trainable=true`，在节点上显示「参与训练」。
+- **GPU**：`rl.devices.ids`，即 `CUDA_VISIBLE_DEVICES`。
+- **n**：每题采样条数，GRPO 组大小，对应 `rollout.n`。
+- **runners**：并行采集进程数 `n_runners`，在 RL 设置里。
 
-### 2.2 左侧导航（7 个页面）
+### 2.2 工作区菜单
 
-| 页面 | 职责 | 写哪个 YAML |
+| 菜单 | 职责 | 写哪个 YAML |
 |------|------|-----------|
-| Experiment | 实验 切换/新建/seed | `experiment.yaml` |
+| Experiment | 实验名、seed | `experiment.yaml` |
 | LLM | 推理后端：API / 本地 vLLM / RL endpoint | `llm.yaml`（密钥进 `.secrets.env`） |
-| MAS | Agent 图编辑 + Rollout Sampling 小窗 + Collect | `workflow.yaml` |
-| RL | 训练超参 + 启停训练 + 日志 | `rl.yaml` |
-| RolloutTree | 每 query 一棵 rollout 树可视化（只读） | — |
-| Harness | 诊断插件勾选 + hypotheses | `harness.yaml` |
-| Monitor | reward 曲线 / 轨迹表 / 训练日志 | — |
+| MAS | Agent 图、Rollout Sampling 小窗 | `workflow.yaml` |
+| RL | 算法、数据、训练策略、环境 | `rl.yaml` |
+| Harness | 诊断插件 | `harness.yaml` |
+| Monitor | 实验级 reward 曲线，和当前 run 的实时 stdout | — |
+| Runs | 训练记录。每条 run 上有「采样结果」 | — |
 
-App 启动时会查 `GET /api/runs`：若存在**活跃（或最近）的 train run** 且其实验 ≠ 当前所选，自动切换到该实验（提示 chip `auto-selected <exp>`），保证 RL 日志 / RolloutTree / Monitor 反映当前真正在跑的 run（2026-09-20 起）。
+采样树的路由是 `#/experiments/<id>/runs/<runId>/samples`。它从 Runs 或训练控制台进入，不在菜单里占一项。
 
-### 2.3 训练横幅与底部状态条
+### 2.3 训练进行时
 
-训练运行时主内容区上方出现横幅：`run=<run_id>`、**Stop**（中断训练）、**AGL Metrics**（训练中 LightningStore 存活时才可点，同源打开 `/agl/metrics`）。
+顶栏按钮变成「查看训练」。控制台里是这一次 run 的状态和 stdout，可以 Stop，训练中 LightningStore 存活时可以打开 AGL Metrics。Monitor 的日志区绑定同一个 run：切换 run 会清空上一份，再订阅新的 SSE。实验级 reward 曲线不跟着这次切换清空。
 
-底部状态条常驻：`running/idle` 状态 chip、`reward=<mean_reward>`（Monitor 数据）、最近日志尾行（悬停看全文）、训练中额外显示 Stop。
+### 2.4 切菜单不丢草稿
 
-### 2.4 「切页不丢草稿」机制
+LLM、MAS、RL、Harness 挂在同一块画布草稿上：
 
-七个面板在 `App` 里 **keep-mounted**（`display:none` 切换，不卸载）。因此：
-
-- 未点保存的草稿（RL 数字、MAS 图、LLM 密钥框、Harness 勾选、Experiment seed）切 Tab 后仍在，对应面板会显示「未保存」chip。
-- 仅在 **切换 experiment_id** 时才会用磁盘 YAML 覆盖本地草稿。
-- 顶栏 Collect / 勾 GPU 会 `reload()` bundle，但不会把未保存数字打回 YAML。
-- 训练 `run_id` / stdout 提升到 App 全局轮询（4s），切走 RL 再回来训练仍显示 running，可 Stop。
+- 未点「保存实验」时，切菜单后草稿还在。
+- 只有切换实验，才会用磁盘 YAML 覆盖本地草稿。
+- 勾 GPU 不会把未保存的数字写回 YAML，要再点保存。
+- 训练是否在跑由 `/api/rl/activity` 判断。切到别的菜单再回来，活动训练仍可从「查看训练」进入。
 
 ---
 
@@ -172,12 +172,21 @@ App 启动时会查 `GET /api/runs`：若存在**活跃（或最近）的 train 
 
 ### 3.1 顶栏与全局操作
 
-已在 §2.1 介绍元素布局，这里补充操作要点：
+元素见 [§2.1](#21-顶栏)。操作要点：
 
-- **GPU 芯片**：点击切换选中；至少保留一张（取消最后一张会自动保留一张）。悬停显示显存/利用率。保存即写 `rl.devices.ids` 与 `trainer.n_gpus_per_node`。
-- **Collect**：mock 模式，n=1，用于快速验证 workflow 可执行并产生 `artifacts/collect.json`（供 Monitor / Diagnose 使用）。图非法（`executable=false`）时按钮禁用。
-- **Diagnose**：对最近一次 Collect 的产物跑 Harness 插件诊断。
-- **Train**：等价 RL 页「一键启动训练」；确认弹窗提示「启动训练将停止本地 LLM（若在跑）」。
+- **GPU**：点击切换选中。悬停显示显存和利用率。点「保存实验」后写入 `rl.devices.ids` 与 `trainer.n_gpus_per_node`。
+- **保存实验**：五份 YAML 一起落盘。图不可执行时，保存后的状态 chip 会给出原因。
+- **开始训练**：确认弹窗会说明将停止本地 LLM。后端先按 workflow 的采样声明做 overlay，再拉起 `train_tir_agent.py`。
+- **查看训练**：打开当前 run 的控制台。日志是这条 run 的 SSE，不是实验级曲线。
+
+采集不在顶栏。等价命令：
+
+```bash
+science-infra collect --mock --n 2 --out /tmp/traj.json
+science-infra diagnose /tmp/traj.json
+```
+
+Collect 会走编译后的多 Agent 图。开始训练后的热路径仍是单 hub TirAgent，加上 workflow 里声明的分支采样。
 
 ### 3.2 Experiment 页
 
@@ -314,29 +323,19 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 - `messages`（默认）：从对话消息前缀续写
 - `token_prefix`（Advanced）：token 前缀续写；**注意**训练侧无 token 引擎时会降级 messages 并打 `resume_mode_downgraded`，属已知合同行为
 
-#### 3.4.3 Collect 操作区
+#### 3.4.3 采集不在画布按钮上
 
-**卡片一（Workflow 卡底部）**：
+界面里没有 Collect (mock) / Collect (live) 按钮。采集走命令行，产物仍是 `experiments/<id>/artifacts/collect.json`，Monitor 的 Collect 曲线和 Harness 诊断读这份文件。
 
-| 控件 | 说明 |
-|------|------|
-| 保存 workflow.yaml | 序列化画布 + sampling |
-| 采集条数 n | mock/live Collect 的每题轨迹条数 |
-| algo | 写入 TrainSignal 的 advantage 名（如 `arpo`/`rae`） |
-| Collect (mock) | 假 LLM，验证 wiring（**不做**树分支） |
-| Collect (live) | 真实 LLM 跑 n 条 |
+```bash
+science-infra collect --mock --n 2 --out /tmp/traj.json
+# live 需要 .env 里的 OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL
+./run.sh live-api-data
+```
 
-**卡片二（live-api-data）**：对齐 `./run.sh live-api-data`，从 parquet 抽题经 API 跑：
+Collect 走编译后的多 Agent 图，用来检查 workflow 能否执行。它不产生训练分支树。真 branch 只在训练 Daemon（`tir_algo` 为 arpo、aepo 或 rae）里出现。
 
-| 字段 | 默认 | 说明 |
-|------|------|------|
-| parquet | `data/val.parquet` | 数据源 |
-| data_n | 5 | 抽取条数 |
-| source | `gsm8k` | 按任务来源过滤 |
-
-结果表列出 group / idx / id / answer / reward / branch / tool。产物写入 `experiments/<id>/artifacts/collect.json`。
-
-**防假绿提醒**（详见 [BRANCH_ROLLOUT_UI_TEST.md](./BRANCH_ROLLOUT_UI_TEST.md) §0）：Collect 成功（含 mock）**不等于**树分支真的发生。真 branch 只在训练 Daemon（`tir_algo∈{arpo,aepo,rae}`）里出现。
+从 parquet 抽题的字段仍是：`parquet` 默认 `data/val.parquet`，`data_n` 默认 5，`source` 默认 `gsm8k`。结果表列 group / idx / id / answer / reward / branch / tool。
 
 ### 3.5 RL 页
 
@@ -368,17 +367,18 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 
 **操作按钮**：
 
-- 「按当前机器推荐」：按 `GET /api/gpus` 的 `recommend` 档位预填（1 卡时 `a800_2gpu` 自动降为 `a800`/`fast`），需点保存
-- 「保存超参」：写 `rl.yaml`
-- 「从 TrainSignal 预填」：把 Monitor 里最近 Collect 的 TrainSignal（advantage 名、clip_ratio、entropy_coeff 等）预填进表单，需点保存
-- 「一键启动训练」：先保存再 Train（确认弹窗；会停本地 vLLM）
-- 「一键中断训练」：Stop
-- 「打开 AGL Metrics」：训练中 LightningStore 存活时可点
-- 「刷新日志」：拉取训练 stdout tail（页面底部 `<pre>` 展示）
+- 「按当前机器推荐」：按 `GET /api/gpus` 的 `recommend` 档位预填（1 卡时 `a800_2gpu` 自动降为 `a800`/`fast`），需再保存
+- 「保存超参」或「保存训练方案」：写 `rl.yaml`。顶栏「保存实验」会连同其它草稿一起落盘
+- 「保存训练配置并确认启动」：先保存再训练（确认弹窗；会停本地 vLLM）。顶栏「开始训练」走同一条启动
+- 「停止训练」：Stop
+- 「打开 AGL Metrics」：训练中 LightningStore 存活时可点；否则显示「Metrics 未就绪」
+- 「刷新日志」：重连当前 run 的 stdout SSE。切换 run 会清空上一份
 
-### 3.6 RolloutTree 页
+### 3.6 Runs 与采样结果
 
-**功能**：可视化每条 query 的 rollout 树，只读。
+**入口**：工作区菜单 **Runs**。一条训练记录上的「采样结果」打开 `#/experiments/<id>/runs/<runId>/samples`。训练控制台里也有同一入口。页面只读。
+
+**功能**：可视化每条 query 的 rollout 树。
 
 **数据源（2026-09-20 起）**：`GET /api/mas/rollout-trees` 双源合并——
 
@@ -387,10 +387,9 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 
 - 树 chip 列表切换：每棵树按 `tree_id` 前 14 位展示；显示 `file / nodes / leaves / query` 概要。
 - 节点标注：`node_id` + 关键 metrics（`event_kind`、`h_tool`、`site_id`、`reward_scheme`）+ `r=<reward>` + verdict。
-- SSE 实时更新：训练/采集进程写入新节点或 outcome 时顶部出现绿色 chip（如 `node_added · nodes=12`），loss 事件会显示前 4 个 metric。
-- 每 8 秒自动刷新（仅页面可见时）。
+- SSE 实时更新：`/api/events` 约每 0.5 秒从当前 train/collect 进程的 stdout 抽出 `{"__rollout_tree_event__"` 行，转发成 `rollout_tree`。排水不依赖总线上先有别的事件。训练写入新节点时，页面出现 `node_added`。
 
-**心智模型**：root=query，叶子=outcome。Collect 产出为单链树（**树≠branch**）；**真分支树在训练进行中就会出现**——Daemon ready_batch 增量 enqueue 路径每合入一棵新树即落盘 `tree_*.json` 并发 `node_added` SSE 帧（不再需要等训练完全结束或手动跑 `branch-ui-test --train`）。离线复核命令：`.venv/bin/python scripts/rollout_tree_verify.py`（5/5 PASS 判据见 §5.11）。
+**心智模型**：root=query，叶子=outcome。Collect 产出为单链树（树和训练分支不是一回事）。真分支树在训练进行中就会出现：Daemon 每合入一棵新树就落盘 `tree_*.json`，采样结果页收到 `node_added`。不必等进程结束。离线复核：`.venv/bin/python scripts/rollout_tree_verify.py`。
 
 ### 3.7 Harness 页
 
@@ -409,19 +408,26 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 **操作**：
 
 1. 勾选插件 → 「保存」（写 `harness.yaml` 的 `plugins`）
-2. 「对最近 Collect 诊断」：保存后跑 `POST /api/harness/diagnose`，表格列出 plugin / event_id / message（hypotheses）
+2. 「保存并诊断已有产物」：保存后对当前实验已有的 `collect.json` 跑 `POST /api/harness/diagnose`，表格列出 plugin / event_id / message（hypotheses）。这份产物由命令行 Collect 生成。
 
 ### 3.8 Monitor 页
 
-**功能**：实验观测中枢，自动轮询（4s）。
+**功能**：实验观测。曲线按实验聚合；日志按当前 run 订阅。
 
 **统计 chip 行**：`collect n` / `collect mean` / `sampling mode` / `group_n` / `train pts` / `errors`。
 
+**两套数据，不要混**：
+
+| 区域 | 范围 | 数据从哪来 |
+|------|------|------------|
+| 训练 Reward、Collect Reward | 整个实验 | 训练中读 LightningStore；训练结束后回落 `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`。Collect 曲线来自该实验的 `artifacts/collect.json` |
+| 训练日志 | 当前这一次 run | 该 run 的 SSE（`useRunLog`）。切换 run 会清空上一份再订阅新的。磁盘上仍是 `experiments/<id>/artifacts/runs/<run>/stdout.log` |
+
 **卡片**：
 
-1. **训练日志**：stdout tail（`experiments/<id>/artifacts/runs/<run>/stdout.log`；Control 重启后从磁盘恢复）。训练中可开 AGL Metrics。
-2. **训练 Reward（AGL）**：训练步 reward 曲线（与 AGL Metrics 同源）；训练中读 LightningStore。**2026-09-20 起支持离线回落**：训练结束（LightningStore 关闭）后曲线**不再消失**，后端自动回落到 `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl` 续供历史 step 序列（重启 UI 生效）。无训练记录时为空，提示「等第一批 episode 结束」。
-3. **Collect Reward**：MAS 采集的 reward 曲线（**不是**训练步）。
+1. **训练日志**：当前 run 的实时 stdout。刷新会重连这条 SSE。训练中可开 AGL Metrics。
+2. **训练 Reward（AGL）**：实验级训练步曲线。无训练记录时为空。
+3. **Collect Reward**：该实验 MAS 采集的 reward，不是训练步。
 4. **Trajectories（按 group 分组）**：表列 group / idx / id / reward / branch / format / answer；点击行展开该轨迹完整 Events JSON。
 5. **Harness**：hypotheses 表（可按 plugin 过滤）+ TrainSignal 摘要（advantage / loss 参数）。
 
@@ -433,15 +439,17 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 
 | UI 位置 | 写入文件 | 生效字段/调用 |
 |---------|---------|--------------|
-| 顶栏 GPU 芯片 | `rl.yaml` | `devices.ids` → `CUDA_VISIBLE_DEVICES`；`trainer.n_gpus_per_node` |
-| 顶栏 Collect/Diagnose/Train | — | `POST /api/mas/collect` / `/api/harness/diagnose` / `/api/rl/train` |
+| 顶栏 GPU | `rl.yaml` | `devices.ids` → `CUDA_VISIBLE_DEVICES`；`trainer.n_gpus_per_node` |
+| 顶栏「保存实验」 | 五份 YAML | 工作区草稿落盘 |
+| 顶栏「开始训练」 | — | `POST /api/rl/train` |
 | Experiment 页 | `experiment.yaml` | `seed` / `name` |
 | LLM 页 | `llm.yaml`（密钥进 `.secrets.env`） | Collector LLM；local 模式 vLLM start/stop |
 | MAS 画布 + 小窗 | `workflow.yaml` | `agents/edges/entry_agent` + `sampling.{mode,group_n,beam_size,sites}` |
 | MAS Inspector 训练简参 | `rl.yaml` | `rollout_per_gpu` / `n_runners` |
 | RL 页 | `rl.yaml` | 全部超参；Train 时 overlay `algorithm.tir_algo` 等 |
 | Harness 页 | `harness.yaml` | `plugins` → `HARNESS.diagnose` |
-| Monitor / RolloutTree | — | 只读 `artifacts/collect.json` + 训练 stdout / `.local_expansion` |
+| Monitor | — | 实验级曲线 + 当前 run 的 stdout |
+| Runs → 采样结果 | — | 只读 `mas/.local_expansion` |
 
 保存动作永远是显式的（各页「保存」按钮）；切换页面不丢草稿但也不落盘。
 
@@ -453,7 +461,7 @@ MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow �
 | **可训练 Agent**（谁吃梯度） | `agents[].trainable` → `--active-agent` | 节点属性 Inspector 勾选 |
 | **每题几条 / 并行进程** | `rl.rollout_per_gpu` / `rl.n_runners` | Inspector 训练简参或 RL 页 |
 
-**不要**把 `rollout.n` 画成图节点。顶栏合同摘要是快速自检：`入口=hub · 可训=[hub] · GPU=0 · n=2 · runners=1`。
+**不要**把 `rollout.n` 画成图节点。自检看三处：MAS 上采集入口 pin、Agent 节点是否「参与训练」、RL 设置里的每题条数和 GPU。
 
 ### 4.3 GPU / RL 旋钮
 
@@ -511,17 +519,17 @@ mode 速查：
 
 ```mermaid
 flowchart TD
-  ui[你操作的 Control UI] -->|MAS页保存| wf[workflow.yaml<br/>sampling.mode/sites]
-  ui -->|RL页保存| rl[rl.yaml<br/>algo/n_runners]
-  ui -->|顶栏Train| sync[apply_sample_policy<br/>overlay]
+  ui[Science Studio] -->|MAS 保存采样| wf[workflow.yaml]
+  ui -->|RL 保存算法| rl[rl.yaml]
+  ui -->|顶栏保存并开始训练| sync[apply_sample_policy]
   wf --> sync
+  rl --> sync
   sync --> cli[train_tir_agent.py]
-  cli --> verl[agl VERL TirAgentLightningTrainer]
-  verl --> daemon[TirAgentModeDaemon]
-  daemon --> wave1[波1: initial_rollouts<br/>条独立轨迹]
-  daemon --> wave2[波2: branch resume<br/>+ global 补齐]
-  wave2 --> grpo[同 data_id 凑满 group_n<br/>进 GRPO 组]
-  grpo --> update[actor update<br/>3 steps]
+  cli --> daemon[TirAgentModeDaemon]
+  daemon --> wave1[波1 独立轨迹]
+  daemon --> wave2[波2 branch 续写并补齐]
+  wave2 --> samples[Runs 采样结果]
+  wave2 --> update[actor update]
 ```
 
 ### 5.2 第一步：准备
@@ -543,7 +551,7 @@ cd mas && TRAIN_LIMIT=32 VAL_LIMIT=8 bash scripts/prepare_data.sh
 ./run.sh ui --daemon        # 后台；日志 artifacts/run_smoke/ui.log
 ```
 
-浏览器打开 `http://127.0.0.1:8787/`，顶栏（或 Experiment 页）选实验 **`arpo_e2e`**。确认合同摘要出现 `入口=hub · 可训=[hub]`。
+浏览器打开 `http://127.0.0.1:8787/`。首页选实验 **`arpo_e2e`** 进入工作区。在 MAS 上确认采集入口是 hub，hub 节点显示「参与训练」。
 
 ### 5.4 第三步：LLM 页
 
@@ -587,35 +595,37 @@ sampling:
 5. 可选：「按当前机器推荐」预填档位；「高级 Hydra 字段」里 `total_epochs=1`、`experiment_name` 等（`total_training_steps=3` 在 rl.yaml 中，短训验收够用）。
 6. 「保存超参」。
 
-### 5.7 第六步：（可选）先 Collect 冒烟
+### 5.7 第六步：（可选）先用命令行采集冒烟
 
-MAS 页：algo 填 `arpo` → 「Collect (mock)」。预期：
+界面没有 Collect 按钮。保存实验后：
 
-- 响应里 `train_signal.advantage.name=arpo`；
-- `experiments/arpo_e2e/artifacts/collect.json` 生成；
-- **没有** expansion / `branch_local_count`（Collect 不做树分支，属正常）。
+```bash
+science-infra collect --mock --n 2 --out /tmp/traj.json
+```
 
-想验真实链路再用「Collect from parquet (live)」（默认 `data/val.parquet` × 5 × gsm8k）。
+预期：轨迹里能看到工具调用和答案；`experiments/arpo_e2e/artifacts/collect.json` 可以随后由诊断或 Monitor 读取；**没有** expansion / `branch_local_count`。Collect 走编译后的多 Agent 图，不做训练分支。
 
-### 5.8 第七步：启动训练
+想验真实链路再用 `./run.sh live-api-data`（默认 `data/val.parquet`，gsm8k）。
 
-1. 顶栏 GPU 芯片勾选训练用卡（如 `GPU 0`）——已写入 `rl.devices.ids`。
-2. 点 **Train**（或 RL 页「一键启动训练」）→ 确认弹窗（会停本地 LLM）。
-3. 顶部出现训练横幅 `run=<run_id>`；RL / Monitor 页可见 stdout tail。
+### 5.8 第七步：保存并开始训练
 
-训练启动时后端会：写回 `rl.yaml` 前调用 `apply_sample_policy(workflow.sampling)`，同步 `algo` / `rollout.n` / `algorithm.tir.*`（`tir_algo=arpo`），再以 `CUDA_VISIBLE_DEVICES=<勾选卡>` 拉起 `train_tir_agent.py --rl-yaml .../arpo_e2e/rl.yaml`。
+1. 顶栏 GPU 勾选训练用卡（如 `GPU 0`）。
+2. 点「保存实验」，再点「开始训练」。确认弹窗会说明将停止本地 LLM。
+3. 按钮变成「查看训练」。点进去看当前 run 的 stdout。Runs 里点「采样结果」看树。Monitor 的曲线是实验级的，日志区只显示这一次 run。
+
+训练启动时后端会：写回 `rl.yaml` 前调用 `apply_sample_policy(workflow.sampling)`，同步 `algo` / `rollout.n` / `algorithm.tir.*`（`tir_algo=arpo`），再以 `CUDA_VISIBLE_DEVICES=<勾选卡>` 拉起 `train_tir_agent.py --rl-yaml .../arpo_e2e/rl.yaml`。当前训练热路径是单 hub TirAgent 加声明式分支采样，不会把画布上的多专家拓扑原样执行。
 
 ### 5.9 第八步：验收（对照 [ARPO_TRAIN_TEST.md](./ARPO_TRAIN_TEST.md) Phase 4）
 
 | 判据 | 期望 | 在哪看 |
 |------|------|-------|
-| 启动日志 | `tir_algo=arpo`（`adv_estimator` 仍为 `grpo`，正常） | RL/Monitor 日志 |
+| 启动日志 | `tir_algo=arpo`（`adv_estimator` 仍为 `grpo`，正常） | 查看训练 / Monitor 当前 run 日志 |
 | sibling sampling | `Applied sibling workflow.sampling → tir_algo=arpo rollout.n=4` | 同上 |
 | 波 1 | 每题约 `initial_rollouts=2` 条独立轨迹 | 同上 |
 | 波 2（branch） | enqueue 元数据出现 `resume_messages` / `arpo_branch` / `tir_branch`；`training/incremental_branch_count` 增长 | 日志 / metrics |
-| **branch 真的触发**（2026-09-20 新增） | metrics 行出现 `training/branch_local_count` > 0，且日志出现 `[TIR arpo] enqueued <N> branch/resume rollouts` | RL/Monitor 日志、`training.log_metrics` |
-| **RolloutTree 落盘可见**（2026-09-20 新增） | `mas/.local_expansion/tree_ro-*.json` 出现（daemon 平铺格式，child 为真实 store rollout id），且 **RolloutTree 页立即可见、可点选** | 文件 / RolloutTree 页 |
-| expansion 产物 | `mas/.local_expansion/<rollout_id>.json` 含 `plans[]`、`branch_local_count>0`，plan meta 可含 `event_kind`（after_tool / after_agent_turn） | 文件 / RolloutTree 页 |
+| **branch 真的触发** | metrics 行出现 `training/branch_local_count` > 0，且日志出现 `[TIR arpo] enqueued <N> branch/resume rollouts` | 当前 run 日志 |
+| **采样结果可见** | `mas/.local_expansion/tree_ro-*.json` 出现（child 为真实 store rollout id），Runs → 采样结果里可以点开 | 文件 / 采样结果 |
+| expansion 产物 | `mas/.local_expansion/<rollout_id>.json` 含 `plans[]`、`branch_local_count>0` | 文件 / 采样结果 |
 | 组大小 | 同 `data_id` 凑近 `rollout.n=4` | Monitor Trajectories 按 group 分组 |
 | 步进 | AGL metrics / TensorBoard ≥ 3 steps | 横幅「AGL Metrics」 |
 | 磁盘 overlay | `rl.yaml` 的 `algorithm.tir_algo=arpo` 且 `rollout.n=4` | 文件 |
@@ -628,7 +638,7 @@ MAS 页：algo 填 `arpo` → 「Collect (mock)」。预期：
 
 ### 5.10 第九步：停止与产物
 
-- 停止：横幅或底条 **Stop**（`POST /api/rl/stop`）。
+- 停止：训练控制台里的 Stop（`POST /api/rl/stop`）。
 - 产物路径：
 
 | 产物 | 路径 |
@@ -636,10 +646,10 @@ MAS 页：algo 填 `arpo` → 「Collect (mock)」。预期：
 | 训练 stdout | `experiments/arpo_e2e/artifacts/runs/<run>/stdout.log`（Control 重启后仍可恢复） |
 | overlay 后 rl.yaml | `experiments/arpo_e2e/rl.yaml` |
 | expansion plans | `mas/.local_expansion/<rollout_id>.json`（runner 展开，合成 `{parent}:0` 节点 id） |
-| **RolloutTree 持久化** | `mas/.local_expansion/tree_<tree_id>.json`（Daemon 落盘，真实 store rollout id，2026-09-20 起） |
-| **训练 reward 历史（离线曲线源）** | `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`（Monitor 离线回落读取） |
+| **采样树** | `mas/.local_expansion/tree_<tree_id>.json`（Daemon 落盘，真实 store rollout id） |
+| **训练 reward 历史** | `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`（Monitor 实验级曲线的离线源） |
 | collect 产物 | `experiments/arpo_e2e/artifacts/collect.json` |
-| 训练曲线 | 横幅 AGL Metrics（训练中） / TensorBoard / Monitor 离线曲线（训练后） |
+| 训练曲线 | 训练中的 AGL Metrics；结束后看 Monitor 的实验级曲线 |
 
 ### 5.11 假绿警告（务必读）
 
@@ -650,7 +660,7 @@ MAS 页：algo 填 `arpo` → 「Collect (mock)」。预期：
 | `token_prefix` 已选 | 训练侧恒降级 messages（`resume_mode_downgraded`） |
 | `tir.ready_batch_size=0` | 训练默认路径常为 0；以 Daemon **增量 enqueue** + 单测为准 |
 | 负例：`beam_size=1` 或极大 gate 阈值 | 仍应凑满 group_n（global fill），`n_plans` 可为 0 |
-| GPU 显得空闲（训练中） | 训练进程若崩溃（如旧版 triplet 空批 bug），vLLM 随之退出 → GPU 空白；先看 RL 页日志尾部是否 `IndexError`，不要误判为「LLM 没启动」 |
+| GPU 显得空闲（训练中） | 训练进程若崩溃，内嵌 vLLM 随之退出。先看「查看训练」或 Monitor 当前 run 日志尾部是否 `IndexError` |
 
 自动化复核：
 
@@ -677,17 +687,17 @@ LightningStore（默认 `:4747`）只在 `agl.Trainer.fit()` 期间存在，Cont
 **Q2：改了代码 / 更新了 palette，UI 下拉里没有新选项（如 `rae`）？**
 必须重启 UI：`./run.sh ui --stop && ./run.sh ui --daemon`。前端 dist 与后端 palette 都在启动时加载。
 
-**Q3：Collect 按钮是灰的 / 保存后报 400？**
-图不可执行（`executable=false`）。常见原因：Agent↔Agent 连了 `tool_call`、`route` 目标有多条入边、`message` 连到 Tool 节点。画布顶部的 chip 会显示具体原因，修正边后重新保存。
+**Q3：保存后画布提示不可执行，或采集返回 400？**
+图不可执行（`executable=false`）。常见原因：Agent↔Agent 连了 `tool_call`、`route` 目标有多条入边、`message` 连到 Tool 节点。画布上的 chip 会显示具体原因。采集不在顶栏，修正边并保存后，用 `science-infra collect --mock` 再跑。
 
-**Q4：Collect 成功但没看到分支树？**
-Collect **不做**树分支（`beam_size` 只是声明）。真 branch 只在训练（`tir_algo∈{arpo,aepo,rae}`）时由 Daemon 产生，产物在 `mas/.local_expansion/`，用 RolloutTree 页查看（跑 `./run.sh branch-ui-test --train` 也能生成）。
+**Q4：采集成功但采样结果里没有分支树？**
+Collect 不做训练分支（`beam_size` 只是声明）。真 branch 只在训练（`tir_algo` 为 arpo、aepo 或 rae）时由 Daemon 产生，产物在 `mas/.local_expansion/`。到 Runs 点「采样结果」查看。`./run.sh branch-ui-test --train` 也能生成。
 
 **Q5：训练启动后本地 vLLM 被停了？**
 设计行为：Train 与本地 LLM 互斥（抢 GPU）。启动训练的确认弹窗有提示；训练结束后在 LLM 页重新「一键启动 LLM」。
 
 **Q6：Monitor 的 Collect 曲线和训练 Reward 有什么区别？**
-Collect 曲线只反映 MAS 采集（Collect 时打点）；训练 Reward 与 AGL Metrics 同源（LightningStore），两者独立。
+两条都是实验级曲线。Collect 曲线来自该实验的 `artifacts/collect.json`；训练 Reward 与 AGL Metrics 同源，训练中读 LightningStore，结束后回落 `metrics.jsonl`。它们都不是「当前 run 的 stdout」。当前 run 的日志在训练日志卡片里，切换 run 会清空上一份。
 
 **Q7：`rollout_per_gpu` 和小窗 `group_n` 不一致会怎样？**
 Train 时后端用 `apply_sample_policy(workflow.sampling)` 覆盖：`group_n → rollout.n`。以小窗为准，建议两边保持一致（ARPO 例中都是 4）。
@@ -703,17 +713,19 @@ Train 时后端用 `apply_sample_policy(workflow.sampling)` 覆盖：`group_n �
 
 **Q10：测试入口一览？**
 ```bash
-./run.sh feature-test --list  # 16 个功能域
-./run.sh feature-test branch  # 只测分支采样域
-./run.sh traj-test            # 前端轨迹推导 vitest
-./run.sh arpo-train-test      # ARPO 训练 10 轮断言（结束后恢复 YAML）
+./run.sh feature-test --list   # 功能域以这份列表为准
+./run.sh feature-test functional
+./run.sh feature-test branch
+./run.sh traj-test
+./run.sh arpo-train-test
 ```
+`functional` 域 19 例已通过。全量数字不要写成历史的「15 域 154 例」。
 
 **Q11：训练日志里 `Length of triplets is 0` 反复出现然后崩溃（`IndexError: argmax()`），GPU 也空了？**
 旧版本 bug（2026-09-19 已修复）：span→triplet 的 `agent_match` 误用 MAS 图 agent 名（`hub`），而 AGL adapter 读的是 LangGraph 节点名（`agent`/`tools`/...），命名空间不匹配导致所有 LLM span 被过滤、训练 batch 为空。修复后训练入口会打印 `Adapter agent match: 'agent' (MAS agent 'hub' -> langgraph node)`。GPU 空白 = 训练进程已崩溃退出（vLLM 内嵌在训练进程里），与「没启动本地 LLM」无关——LLM 页的一键启动只服务 Collect(live)。
 
-**Q12：IDE 内嵌浏览器（webview）里 RolloutTree 页一直显示「暂无树」/ 请求挂起，但 curl 同一 API 秒回？**
-不是数据问题，是浏览器连接配额问题：`App.tsx` 与 `RolloutTree.tsx` 各持有一条 `/api/events` SSE 长连接，RolloutTree 页还有 8 秒轮询；HTTP/1.1 下每个域名最多 6 条并发连接，内嵌 webview 里很容易把配额占满，后续 `fetch` 全部排队饿死。**改用外部浏览器**（Chrome/Edge/Firefox，经 §1.4 的公网转发或 SSH 端口转发访问 8787）即恢复正常。API 层可用 `curl http://127.0.0.1:8787/api/mas/rollout-trees` 直接验证数据（2026-09-20 排查记录）。
+**Q12：外部能 curl 到树，采样结果页却一直转圈或请求挂起？**
+多半是浏览器连接配额。`/api/events` 是一条不结束的 SSE；HTTP/1.1 下每个域名大约 6 条并发连接，IDE 内嵌 webview 很容易把后续 `fetch` 堵住。改用外部浏览器（经 §1.4 的公网转发或 SSH 端口转发访问 8787）。API 可用 `curl http://127.0.0.1:8787/api/mas/rollout-trees` 直接验证。树帧由 `/api/events` 约每 0.5 秒从 stdout 排水转发，不依赖总线上先有别的事件。
 
 **Q13：训练结束后 Monitor 的训练 Reward 曲线消失了？**
 旧行为（LightningStore 随训练进程退出而关闭，曲线清空）。**已修复（2026-09-20）**：`services._offline_step_rewards` 离线回落读取 `mas/checkpoints/AgentLightning/<exp>/metrics.jsonl`，训练结束后曲线保留（历史 step 序列，index 单调）。需要**重启 UI**（`./run.sh ui --stop && ./run.sh ui --daemon`）加载新后端代码后生效。
