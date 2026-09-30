@@ -9,9 +9,10 @@ import { Input } from '../../../shared/ui/input';
 export const NODE_TRANSFER = 'application/science-node';
 export type LibraryTab = 'agent' | 'tool' | 'router' | 'template';
 
-export const GraphPalette = memo(function GraphPalette({ palette, nodes, tab, onTabChange, onAdd, onTemplate, onClose }: {
+export const GraphPalette = memo(function GraphPalette({ palette, nodes, poolMembers = [], tab, onTabChange, onAdd, onTemplate, onClose }: {
   palette: Palette;
   nodes: GraphNode[];
+  poolMembers?: string[];
   tab: LibraryTab;
   onTabChange: (tab: LibraryTab) => void;
   onAdd: (preset: GraphNodePreset) => void;
@@ -22,9 +23,9 @@ export const GraphPalette = memo(function GraphPalette({ palette, nodes, tab, on
   const [replacement, setReplacement] = useState<WorkflowSpec | null>(null);
   const matches = (value: string) => value.toLowerCase().includes(query.trim().toLowerCase());
   const labels: Record<AgentKind, string> = {
-    hub: 'Hub', planner: 'Planner', verifier: 'Verifier', blank: '自定义 Agent', tool: '智能工具',
+    planner: 'Planner', verifier: 'Verifier', blank: '自定义 Agent', tool: '封装工具',
   };
-  const agentKinds: AgentKind[] = ['hub', 'planner', 'verifier', 'blank'];
+  const agentKinds: AgentKind[] = ['planner', 'verifier', 'blank'];
   const knownKinds = new Set<AgentKind>([...agentKinds, 'tool']);
   const agents: GraphNodePreset[] = [
     ...agentKinds.map((kind) => ({
@@ -41,19 +42,18 @@ export const GraphPalette = memo(function GraphPalette({ palette, nodes, tab, on
   const toolIds = Array.from(new Set([...(palette.tools || []), ...toolInfo.keys()]));
   const tools: GraphNodePreset[] = toolIds.map((id) => {
     const info = toolInfo.get(id);
-    const intelligent = Boolean(info && (info.llm_required || info.backend !== 'pure'));
     return {
-      nodeType: intelligent ? 'agent' : 'tool',
+      nodeType: 'agent' as const,
       id,
-      agentKind: intelligent ? 'tool' : undefined,
+      agentKind: 'tool' as const,
       role: 'tool',
-      backend: info?.backend,
-      llmRequired: info?.llm_required,
-      description: info?.description || (intelligent ? '智能工具' : '内置工具'),
+      backend: info?.backend || 'llm',
+      llmRequired: true,
+      description: info?.description || '封装 tool-agent（内核 + LLM）',
     };
   });
   const items = (tab === 'agent' ? agents : tab === 'tool' ? tools
-    : [{ nodeType: 'router' as const, id: 'router', description: '候选 Agent 与 Tool 路由' }])
+      : [{ nodeType: 'router' as const, id: 'router', description: '把上游计划拆给下游 Agent set' }])
     .filter((item) => matches(item.id) || matches(item.description || ''));
   const templates = (palette.templates || []).filter((t) => matches(t.label) || matches(t.id));
   const drag = (event: DragEvent, preset: GraphNodePreset) => {
@@ -85,13 +85,15 @@ export const GraphPalette = memo(function GraphPalette({ palette, nodes, tab, on
           <span><strong>{template.label.replace(' (executable)', '')}</strong><small>{nodes.length ? '替换当前工作流' : '从此模板开始'}</small></span>
         </button>)
         : items.map((item) => {
-          const exists = (tab === 'tool' || item.id === 'hub') && nodes.some((node) => node.id === item.id);
+          const exists = item.agentKind === 'planner' || item.id === 'planner'
+            ? nodes.some((node) => node.id === item.id || node.data.kind === 'planner')
+            : tab === 'tool' && poolMembers.includes(item.id);
           const Icon = tab === 'tool' ? Wrench : tab === 'router' ? Route : Bot;
           return <button type="button" className="mas-library-item" key={item.id} disabled={exists} draggable={!exists}
             onDragStart={(event) => drag(event, item)} onClick={() => onAdd(item)}>
             <span className="mas-library-icon"><Icon size={17} aria-hidden="true" /></span>
             <span><strong>{tab === 'agent' ? item.description : item.id}</strong>
-              <small>{exists ? '已添加' : item.description}</small></span>
+              <small>{exists ? (tab === 'tool' ? '已在 pool 中' : '已添加') : tab === 'tool' ? '加入 tool-agent pool' : item.description}</small></span>
             {!exists && <Plus size={14} className="mas-library-plus" aria-hidden="true" />}
           </button>;
         })}

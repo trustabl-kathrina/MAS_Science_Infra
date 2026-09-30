@@ -458,6 +458,19 @@ def build_training_plan(exp_id: str) -> TrainingPlan:
                 f"{label}文件不存在。",
                 hint=str(path) if path else f"请配置 data.{key}。",
             )
+    test_raw = data.get("test_files")
+    if test_raw:
+        test_path = _data_path(test_raw)
+        if test_path and test_path.is_file():
+            record("test_files", "测试数据", "pass", str(test_path))
+        else:
+            record(
+                "test_files",
+                "测试数据",
+                "warning",
+                "测试数据文件不存在。",
+                hint=str(test_path) if test_path else "请配置 data.test_files。",
+            )
 
     gpu_info = list_gpus()
     gpu_count = int(gpu_info.get("count") or 0)

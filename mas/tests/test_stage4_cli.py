@@ -159,8 +159,8 @@ class TestCliSubprocess(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(doc.returncode, 0, doc.stderr + doc.stdout)
-            self.assertIn("python=", doc.stdout)
-            self.assertIn("hub_react", doc.stdout)
+        self.assertIn("python=", doc.stdout)
+        self.assertIn("topology=", doc.stdout)
 
     def test_collect_rollouts_script(self):
         with tempfile.TemporaryDirectory() as td:

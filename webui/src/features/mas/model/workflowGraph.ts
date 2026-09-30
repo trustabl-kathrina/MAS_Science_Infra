@@ -8,6 +8,14 @@ export { KNOWN_TOOLS } from './edgeDefinitions';
 
 export const EDGE_LABELS: Record<string, string> = Object.fromEntries(EDGE_KINDS.map((kind) => [kind, edgeDefinition(kind).title]));
 
+export function poolNodeId(routerId: string): string {
+  return `pool_${routerId}`;
+}
+
+export function routerIdFromPool(poolId: string): string {
+  return poolId.startsWith('pool_') ? poolId.slice('pool_'.length) : '';
+}
+
 export function graphEdge(source: string, target: string, kind: EdgeKind, id = `edge-${crypto.randomUUID()}`): GraphEdge {
   return { id, source, target, type: 'workflow', data: { kind } };
 }
@@ -24,10 +32,23 @@ export function workflowGraphRevision(workflow: WorkflowSpec): string {
   });
 }
 
+function isHubAgent(agent: { id: string; kind?: string; role?: string }): boolean {
+  const role = (agent.role || '').toLowerCase();
+  const kind = (agent.kind || '').toLowerCase();
+  return agent.id === 'hub' || kind === 'hub' || role === 'hub' || role === 'orchestrator';
+}
+
+function isExecutorAgent(agent: { id: string; kind?: string; role?: string }): boolean {
+  const role = (agent.role || '').toLowerCase();
+  const kind = (agent.kind || '').toLowerCase();
+  return agent.id === 'executor' || kind === 'executor' || role === 'executor';
+}
+
 function inferredKind(agent: AgentSpec): AgentKind {
   const role = (agent.role || '').toLowerCase();
-  if (agent.id === 'hub' || role === 'hub' || role === 'orchestrator') return 'hub';
-  if (role === 'planner' || role === 'executor') return 'planner';
+  const kind = (agent.kind || '').toLowerCase();
+  if (kind === 'planner' || kind === 'verifier' || kind === 'tool' || kind === 'blank') return kind;
+  if (role === 'planner' || agent.id === 'planner') return 'planner';
   if (role === 'verifier') return 'verifier';
   if (role === 'tool') return 'tool';
   return 'blank';
@@ -37,33 +58,77 @@ export function workflowToFlow(
   wf: WorkflowSpec,
   modelNames: ReadonlyMap<string, string> = new Map(),
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const entry = wf.entry_agent || 'hub';
-  const agents =
+  const entry = wf.entry_agent || 'planner';
+  const declared =
     wf.agents && (wf.agents.length > 0 || wf.topology === 'graph')
-      ? wf.agents
+      ? wf.agents.map((agent) => ({ ...agent }))
       : [
           {
-            id: 'hub',
-            role: wf.hub?.role || 'orchestrator',
-            skills: wf.hub?.skills || ['react_loop'],
+            id: 'planner',
+            kind: 'planner' as const,
+            role: wf.hub?.role || 'planner',
+            skills: wf.hub?.skills || [],
             tools: wf.tools || [],
             system_prompt: wf.hub?.system_prompt || '',
             trainable: true,
           },
         ];
 
-  const nodes: GraphNode[] = agents.map((a, i) => ({
+  const hubAgents = declared.filter(isHubAgent);
+  const executorAgents = declared.filter(isExecutorAgent);
+  const dropped = new Set([...hubAgents, ...executorAgents].map((agent) => agent.id));
+  const agents = declared.filter((agent) => !dropped.has(agent.id));
+  let plannerAgent = agents.find((agent) => agent.kind === 'planner' || agent.id === 'planner');
+  if (!plannerAgent && hubAgents.length) {
+    const hub = hubAgents[0];
+    plannerAgent = {
+      id: 'planner',
+      kind: 'planner',
+      role: 'planner',
+      skills: [...(hub.skills || [])],
+      tools: [...(hub.tools || [])],
+      system_prompt: hub.system_prompt || '',
+      trainable: true,
+    };
+    agents.unshift(plannerAgent);
+  } else if (plannerAgent) {
+    for (const hub of hubAgents) {
+      if (!plannerAgent.system_prompt && hub.system_prompt) plannerAgent.system_prompt = hub.system_prompt;
+      if (!(plannerAgent.skills || []).length && hub.skills?.length) plannerAgent.skills = [...(hub.skills || [])];
+    }
+  }
+
+  const executorTools = executorAgents.flatMap((agent) => agent.tools || []);
+  let routers = (wf.routers || []).map((router) => ({
+    ...router,
+    candidates: [...(router.candidates || [])].filter((id) => id !== 'hub' && id !== 'executor' && !dropped.has(id)),
+  }));
+  let synthesizedRouter = false;
+  if (executorTools.length) {
+    if (!routers.length) {
+      synthesizedRouter = true;
+      routers = [{ id: 'route_exec', candidates: [], strategy: 'from_plan' }];
+    }
+    const [first, ...rest] = routers;
+    const candidates = [...(first.candidates || [])];
+    for (const tool of executorTools) {
+      if (!candidates.includes(tool)) candidates.push(tool);
+    }
+    routers = [{ ...first, candidates }, ...rest];
+  }
+
+  const nodes: GraphNode[] = agents.filter((agent) => (agent.kind || inferredKind(agent)) !== 'tool').map((a, i) => ({
     id: a.id,
     type: 'agent',
-    position: { x: 80 + (i % 3) * 240, y: 80 + Math.floor(i / 3) * 150 },
+    position: { x: 80 + (i % 3) * 260, y: 80 + Math.floor(i / 3) * 170 },
     data: {
       label: a.id,
       kind: a.kind || inferredKind(a),
       role: a.role || 'agent',
       skills: a.skills || [],
-      tools: a.tools || (a.id === 'hub' ? wf.tools : []),
+      tools: a.tools || (a.id === 'planner' || a.kind === 'planner' ? wf.tools : []),
       memory_scope: a.memory_scope || 'agent',
-      system_prompt: a.system_prompt ?? (a.id === 'hub' ? wf.hub?.system_prompt : '') ?? '',
+      system_prompt: a.system_prompt ?? (a.id === 'planner' ? wf.hub?.system_prompt : '') ?? '',
       model: a.model || 'inherit',
       model_name: a.model && a.model !== 'inherit' ? modelNames.get(a.model) || a.model : undefined,
       trainable: a.trainable !== false,
@@ -72,16 +137,16 @@ export function workflowToFlow(
       backend: typeof a.profile?.backend === 'string' ? a.profile.backend : undefined,
       llm_required: a.profile?.llm_required === true,
       entry: a.id === entry,
-      verify: a.id === 'hub' ? wf.hub?.verify : undefined,
-      max_feedback_hops: a.id === 'hub' ? wf.hub?.max_feedback_hops : undefined,
+      verify: a.kind === 'planner' || a.id === 'planner' ? wf.hub?.verify : undefined,
+      max_feedback_hops: a.kind === 'planner' || a.id === 'planner' ? wf.hub?.max_feedback_hops : undefined,
     },
   }));
 
-  if (wf.hub?.verify && nodes.some((n) => n.id === 'hub') && !nodes.find((n) => n.id === 'verifier')) {
+  if (wf.hub?.verify && nodes.some((n) => n.data.kind === 'planner') && !nodes.find((n) => n.id === 'verifier')) {
     nodes.push({
       id: 'verifier',
       type: 'agent',
-      position: { x: 300, y: 280 },
+      position: { x: 860, y: 80 },
       data: {
         label: 'verifier',
         kind: 'verifier',
@@ -99,56 +164,93 @@ export function workflowToFlow(
     });
   }
 
-  for (const [index, router] of (wf.routers || []).entries()) {
+  routers.forEach((router, index) => {
     nodes.push({
       id: router.id,
       type: 'router',
-      position: { x: 420 + (index % 2) * 240, y: 100 + Math.floor(index / 2) * 160 },
+      position: { x: 360 + (index % 2) * 280, y: 80 + Math.floor(index / 2) * 200 },
       data: {
         label: router.id,
         candidates: [...(router.candidates || [])],
-        strategy: router.strategy || 'llm_choice',
+        strategy: router.strategy || 'from_plan',
         scorer: router.scorer ?? null,
         meta: router.meta || {},
       },
     });
-  }
-
-  const toolSet = new Set<string>();
-  for (const a of agents) {
-    for (const t of a.tools || []) toolSet.add(t);
-  }
-  for (const t of wf.tools || []) toolSet.add(t);
-  for (const e of wf.edges || []) {
-    if (e.kind === 'tool_call') toolSet.add(e.to);
-  }
-  let ti = 0;
-  for (const t of toolSet) {
-    if (nodes.some((n) => n.id === t)) continue;
     nodes.push({
-      id: t,
-      type: 'tool',
-      position: { x: 80 + (ti % 3) * 220, y: 360 },
-      data: { label: t, role: 'tool' },
+      id: poolNodeId(router.id),
+      type: 'pool',
+      position: { x: 620 + (index % 2) * 280, y: 80 + Math.floor(index / 2) * 200 },
+      data: {
+        label: 'tool-agent pool',
+        members: [...(router.candidates || [])],
+        memberTiers: Object.fromEntries(
+          (router.candidates || []).flatMap((id) => {
+            const tier = declared.find((agent) => agent.id === id)?.profile?.tier;
+            return tier === 'lite' || tier === 'pro' ? [[id, tier]] : [];
+          }),
+        ),
+        routerId: router.id,
+        candidates: [...(router.candidates || [])],
+      },
     });
-    ti += 1;
+  });
+
+  const routerIds = new Set(routers.map((router) => router.id));
+  const executorNext = (wf.edges || []).find((edge) =>
+    executorAgents.some((agent) => agent.id === edge.from) && (edge.kind || 'message') === 'message' && !dropped.has(edge.to));
+  const rawEdges = (wf.edges || [])
+    .filter((edge) => !dropped.has(edge.from) && !dropped.has(edge.to))
+    .map((edge) => edge.to === 'hub' && (edge.kind || 'message') === 'feedback' ? { ...edge, to: plannerAgent?.id || 'planner' } : edge);
+  if (synthesizedRouter && routers[0] && !rawEdges.some((edge) => edge.to === routers[0].id)) {
+    const plannerId = nodes.find((node) => node.data.kind === 'planner')?.id || 'planner';
+    rawEdges.unshift({ from: plannerId, to: routers[0].id, kind: 'route' });
+  }
+  if (synthesizedRouter && routers[0] && executorNext && !rawEdges.some((edge) => edge.from === routers[0].id)) {
+    rawEdges.push({ from: routers[0].id, to: executorNext.to, kind: 'message' });
   }
 
-  const edges: GraphEdge[] = (wf.edges || []).map((e, i) => ({
-    ...graphEdge(e.from, e.to, e.kind || 'message', `e-${e.from}-${e.to}-${i}`),
-    data: { kind: e.kind || 'message', meta: e.meta },
-  }));
-
-  for (const node of nodes.filter((n) => n.type === 'agent')) {
-    for (const tool of node.data.tools || []) {
-      if (!edges.some((e) => e.source === node.id && e.target === tool && e.data?.kind === 'tool_call')) {
-        edges.push(graphEdge(node.id, tool, 'tool_call'));
+  const edges: GraphEdge[] = [];
+  rawEdges.forEach((edge, index) => {
+    const kind = edge.kind || 'message';
+    if (routerIds.has(edge.from) && !edge.to.startsWith('pool_') && (kind === 'message' || kind === 'route')) {
+      const poolId = poolNodeId(edge.from);
+      if (!edges.some((item) => item.source === edge.from && item.target === poolId)) {
+        edges.push(graphEdge(edge.from, poolId, 'route', `e-${edge.from}-${poolId}`));
       }
+      if (!edges.some((item) => item.source === poolId && item.target === edge.to)) {
+        edges.push(graphEdge(poolId, edge.to, 'message', `e-${poolId}-${edge.to}-${index}`));
+      }
+      return;
     }
-    node.data.tools = edges.filter((e) => e.source === node.id && e.data?.kind === 'tool_call').map((e) => e.target);
+    edges.push({
+      ...graphEdge(edge.from, edge.to, kind, `e-${edge.from}-${edge.to}-${index}`),
+      data: { kind, meta: edge.meta },
+    });
+  });
+  for (const router of routers) {
+    const poolId = poolNodeId(router.id);
+    if (!edges.some((edge) => edge.source === router.id && edge.target === poolId)) {
+      edges.push(graphEdge(router.id, poolId, 'route', `e-${router.id}-${poolId}`));
+    }
   }
-  if (wf.hub?.verify && nodes.some((n) => n.id === 'hub') && !edges.some((e) => e.source === 'verifier' && e.target === 'hub' && e.data?.kind === 'feedback')) {
-    edges.push(graphEdge('verifier', 'hub', 'feedback'));
+
+  const skipToolCallEdges = routers.length > 0
+    || wf.topology === 'centralized' || wf.topology === 'hub_react' || wf.topology === 'single' || !wf.topology;
+  if (!skipToolCallEdges) {
+    for (const node of nodes.filter((n) => n.type === 'agent' && n.data.kind !== 'tool')) {
+      for (const tool of node.data.tools || []) {
+        if (!nodes.some((item) => item.id === tool)) continue;
+        if (!edges.some((e) => e.source === node.id && e.target === tool && e.data?.kind === 'tool_call')) {
+          edges.push(graphEdge(node.id, tool, 'tool_call'));
+        }
+      }
+      node.data.tools = edges.filter((e) => e.source === node.id && e.data?.kind === 'tool_call').map((e) => e.target);
+    }
+  }
+  const plannerId = nodes.find((n) => n.data.kind === 'planner')?.id || 'planner';
+  if (wf.hub?.verify && nodes.some((n) => n.data.kind === 'planner') && !edges.some((e) => e.source === 'verifier' && e.target === plannerId && e.data?.kind === 'feedback')) {
+    edges.push(graphEdge('verifier', plannerId, 'feedback'));
   }
 
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -160,33 +262,73 @@ export function flowToWorkflow(
   edges: GraphEdge[],
   base: WorkflowSpec,
 ): WorkflowSpec {
-  const agentNodes = nodes.filter((n) => n.type === 'agent');
-  const toolNodes = nodes.filter((n) => n.type === 'tool');
+  const agentNodes = nodes.filter((n) => n.type === 'agent' && n.data.kind !== 'tool');
+  const toolNodes = nodes.filter((n) => n.type === 'tool' || (n.type === 'agent' && n.data.kind === 'tool'));
   const routerNodes = nodes.filter((n) => n.type === 'router');
-  const hubNode = agentNodes.find((n) => n.id === 'hub') || agentNodes[0];
+  const poolNodes = nodes.filter((n) => n.type === 'pool');
+  const plannerNode = agentNodes.find((n) => n.data.kind === 'planner' || n.id === 'planner') || agentNodes[0];
   const entry =
     agentNodes.find((n) => n.data?.entry)?.id ||
-    hubNode?.id ||
+    plannerNode?.id ||
     '';
 
   const previousAgents = new Map((base.agents || []).map((a) => [a.id, a]));
   const agents: Array<AgentSpec & { tools: string[] }> = agentNodes.map((n) => {
     const previous = previousAgents.get(n.id);
+    const kind = n.data.kind || previous?.kind || inferredKind({ id: n.id, role: n.data.role });
     return {
       ...previous,
       id: n.id,
-      kind: n.data.kind || previous?.kind || inferredKind({ id: n.id, role: n.data.role }),
+      kind,
       role: n.data.role || 'agent',
       skills: n.data.skills || [],
       tools: [...(n.data.tools || [])],
       memory_scope: n.data.memory_scope || 'agent',
       system_prompt: n.data.system_prompt || '',
       model: n.data.model || 'inherit',
-      trainable: n.data.trainable !== false,
+      trainable: kind === 'tool' ? false : n.data.trainable !== false,
       profile: n.data.profile || {},
       meta: n.data.meta || {},
     };
   });
+
+  const poolByRouter = new Map(poolNodes.map((pool) => [pool.data.routerId || routerIdFromPool(pool.id), pool]));
+  for (const pool of poolNodes) {
+    for (const member of pool.data.members || []) {
+      const existing = agents.find((agent) => agent.id === member);
+      const tier = pool.data.memberTiers?.[member];
+      if (existing) {
+        if (existing.kind === 'tool') {
+          existing.trainable = false;
+          if (tier === 'lite' || tier === 'pro') {
+            existing.profile = { ...(existing.profile || {}), tier };
+          }
+        }
+        continue;
+      }
+      const previous = previousAgents.get(member);
+      const kind = previous?.kind === 'blank' || previous?.kind === 'planner' || previous?.kind === 'verifier'
+        ? previous.kind
+        : 'tool';
+      agents.push({
+        ...previous,
+        id: member,
+        kind,
+        role: previous?.role || (kind === 'tool' ? 'tool' : 'agent'),
+        skills: previous?.skills || [],
+        tools: [...(previous?.tools || [])],
+        memory_scope: previous?.memory_scope || (kind === 'tool' ? 'none' : 'agent'),
+        system_prompt: previous?.system_prompt || '',
+        model: previous?.model || 'inherit',
+        trainable: kind === 'tool' ? false : previous?.trainable !== false,
+        profile: {
+          ...(previous?.profile || {}),
+          ...(kind === 'tool' && (tier === 'lite' || tier === 'pro') ? { tier } : {}),
+        },
+        meta: previous?.meta || {},
+      });
+    }
+  }
 
   const agentById = new Map(agents.map((agent) => [agent.id, agent]));
   for (const e of edges) {
@@ -198,46 +340,58 @@ export function flowToWorkflow(
   const tools = Array.from(
     new Set([
       ...(base.tools || []),
+      ...agents.filter((agent) => agent.kind === 'tool').map((agent) => agent.id),
       ...agents.flatMap((a) => a.tools),
       ...toolNodes.map((n) => n.id),
     ]),
   );
 
   const previousRouters = new Map((base.routers || []).map((router) => [router.id, router]));
-  const routers: RouterSpec[] = routerNodes.map((node) => ({
-    ...previousRouters.get(node.id),
-    id: node.id,
-    candidates: [...(node.data.candidates || [])],
-    strategy: node.data.strategy || 'llm_choice',
-    scorer: node.data.scorer || null,
-    meta: node.data.meta || {},
-  }));
+  const routers: RouterSpec[] = routerNodes.map((node) => {
+    const pool = poolByRouter.get(node.id);
+    return {
+      ...previousRouters.get(node.id),
+      id: node.id,
+      candidates: [...(pool?.data.members || node.data.candidates || [])],
+      strategy: node.data.strategy || 'from_plan',
+      scorer: node.data.scorer || null,
+      meta: node.data.meta || {},
+    };
+  });
 
-  const skills = hubNode?.data.skills || [];
-  const verify = hubNode?.data.verify ?? null;
+  const collapsed: GraphEdge[] = [];
+  for (const edge of edges) {
+    if (edge.target.startsWith('pool_')) continue;
+    if (edge.source.startsWith('pool_')) {
+      const routerId = routerIdFromPool(edge.source);
+      if (!routerId || !edge.target || edge.target.startsWith('pool_')) continue;
+      if (!collapsed.some((item) => item.source === routerId && item.target === edge.target && item.data?.kind === 'message')) {
+        collapsed.push({ ...edge, source: routerId, data: { ...edge.data, kind: 'message' } });
+      }
+      continue;
+    }
+    const target = edge.target === 'hub' && edge.data?.kind === 'feedback' ? (plannerNode?.id || 'planner') : edge.target;
+    collapsed.push(target === edge.target ? edge : { ...edge, target });
+  }
+
+  const skills = plannerNode?.data.skills || [];
+  const verify = plannerNode?.data.verify ?? null;
   const maxHops =
-    hubNode?.data.max_feedback_hops ?? base.hub?.max_feedback_hops ?? 1;
-  const hubPrompt =
-    hubNode?.data.system_prompt || '';
+    plannerNode?.data.max_feedback_hops ?? base.hub?.max_feedback_hops ?? 1;
+  const hubPrompt = plannerNode?.data.system_prompt || '';
 
-  const onlyHubish = agents.every((a) => a.kind === 'hub' || a.kind === 'verifier');
-  const topology =
-    !routers.length && hubNode?.id === 'hub' && agents.length <= 2 && onlyHubish
-      ? verify || agents.length > 1
-        ? base.topology === 'graph'
-          ? 'graph'
-          : 'hub_react'
-        : 'hub_react'
-      : 'graph';
+  const topology = routers.length || agents.some((a) => a.kind === 'tool' || a.kind === 'blank')
+    ? (base.topology === 'graph' ? 'graph' : 'centralized')
+    : 'centralized';
 
   return {
     ...base,
     schema_version: '0.3',
     topology,
-    entry_agent: entry,
+    entry_agent: entry || 'planner',
     hub: {
       ...base.hub,
-      role: String(hubNode?.data?.role || 'orchestrator'),
+      role: 'planner',
       skills,
       verify: verify || null,
       max_feedback_hops: maxHops,
@@ -246,12 +400,12 @@ export function flowToWorkflow(
     tools,
     agents,
     routers,
-    edges: serializeEdges(edges),
+    edges: serializeEdges(collapsed),
   };
 }
 
 export function executableInfo(wf: WorkflowSpec): { ok: boolean; reason: string; nodeId?: string } {
-  const agents = wf.agents && (wf.agents.length > 0 || wf.topology === 'graph') ? wf.agents : [{ id: 'hub' }];
+  const agents = wf.agents && (wf.agents.length > 0 || wf.topology === 'graph') ? wf.agents : [{ id: 'planner', kind: 'planner' as const }];
   if (!agents.length) return { ok: false, reason: '请先添加一个 Agent，并设置运行入口。' };
   const agentIds = new Set(agents.map((a) => a.id));
   const toolIds = new Set([
@@ -259,15 +413,16 @@ export function executableInfo(wf: WorkflowSpec): { ok: boolean; reason: string;
     ...agents.filter((agent) => agent.kind === 'tool').map((agent) => agent.id),
   ]);
   const routerIds = new Set((wf.routers || []).map((router) => router.id));
-  const entry = wf.entry_agent || 'hub';
+  const entry = wf.entry_agent || 'planner';
   if (!agentIds.has(entry)) return { ok: false, reason: `入口 ${entry} 不存在，请重新设置运行入口。` };
-  if (wf.topology === 'hub_react' || wf.topology === 'single' || !wf.topology) {
-    return { ok: true, reason: 'hub_react' };
+  if (wf.topology === 'centralized' || wf.topology === 'hub_react' || wf.topology === 'single' || !wf.topology) {
+    return { ok: true, reason: 'centralized' };
   }
   if (wf.topology === 'graph') {
     const inboundRoute: Record<string, number> = {};
     for (const e of wf.edges || []) {
       const kind = e.kind || 'message';
+      if (e.from.startsWith('pool_') || e.to.startsWith('pool_')) continue;
       if (routerIds.has(e.from) || routerIds.has(e.to) || kind === 'sample_barrier') continue;
       const toIsTool = toolIds.has(e.to);
       const fromIsTool = toolIds.has(e.from);

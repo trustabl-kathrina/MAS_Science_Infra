@@ -1,0 +1,56 @@
+label: 双 Router 并行 fan-out
+schema_version: "0.3"
+topology: centralized
+entry_agent: planner
+hub:
+  role: planner
+  skills: []
+tools:
+  - python_coder
+  - think
+agents:
+  - id: planner
+    kind: planner
+    role: planner
+    system_prompt: "可输出 next 列表以并行子任务。只输出 JSON：next, args, sub_goal, done。"
+    tools:
+      - python_coder
+      - think
+    trainable: true
+  - id: python_coder
+    kind: tool
+    trainable: false
+  - id: think
+    kind: tool
+    trainable: false
+  - id: verifier
+    kind: verifier
+    trainable: true
+    system_prompt: "根据 tool-agent 输出判断子目标是否完成，只输出 JSON。"
+routers:
+  - id: route_a
+    candidates:
+      - python_coder
+    strategy: from_plan
+    output_contract: json
+  - id: route_b
+    candidates:
+      - think
+    strategy: from_plan
+    output_contract: json
+edges:
+  - from: planner
+    to: route_a
+    kind: route
+  - from: planner
+    to: route_b
+    kind: route
+  - from: route_a
+    to: verifier
+    kind: message
+  - from: route_b
+    to: verifier
+    kind: message
+  - from: verifier
+    to: planner
+    kind: feedback

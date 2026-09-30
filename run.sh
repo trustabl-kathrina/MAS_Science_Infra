@@ -11,7 +11,10 @@
 #   ./run.sh live-api     # .env API 驱动 TirAgent（同链路）
 #   ./run.sh live-api-data  # 从 data/*.parquet 抽 N 条经 API 跑 TirAgent
 #   ./run.sh live         # 等同 live-api
-#   ./run.sh ui           # 启动 Science Control UI（uv .venv + webui）
+#   ./run.sh ui           # 启动 Science Control UI（已有 webui/dist 则跳过编译）
+#   ./run.sh ui --rebuild # 强制重新编译 webui 与 AGL dashboard 后启动
+#   ./run.sh ui --rebuild --daemon  # 同上，并放到后台（日志 artifacts/run_smoke/ui.log）
+#   ./run.sh ui --stop    # 停止后台 UI
 #   ./run.sh ui-test      # 探测 GPU/RL 控制 API（可 start/stop 训练子进程）
 #   ./run.sh branch-ui-test  # Branch rollout sites/Collect（可选 --train）
 #   ./run.sh traj-test       # Rollout Sampling trajectoryGraph vitest

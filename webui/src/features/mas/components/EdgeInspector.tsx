@@ -31,12 +31,14 @@ export function EdgeInspector({ edge, nodes, rules, topology, onChange, onClose,
   const reverse = reverseConnection(value);
   const reverseError = tool ? '' : rules.error(reverse, kind, edge.id);
   const source = rules.nodeById.get(edge.source);
-  const hubSubset = nodes.filter((node) => node.type === 'agent').every((node) => node.id === 'hub' || node.id === 'verifier');
+  const plannerSubset = nodes.filter((node) => node.type === 'agent' && node.data.kind !== 'tool').every(
+    (node) => node.data.kind === 'planner' || node.data.kind === 'verifier' || node.id === 'planner' || node.id === 'verifier',
+  );
 
   const entityCard = (side: Side) => {
     const id = edge[side];
     const node = rules.nodeById.get(id);
-    const EntityIcon = node?.type === 'tool' ? Wrench : Bot;
+    const EntityIcon = node?.type === 'tool' || node?.data.kind === 'tool' ? Wrench : Bot;
     const label = tool ? side === 'source' ? '使用工具的 Agent' : '提供的 Tool' : side === 'source' ? '发送方' : '接收方';
     return <div className={`mas-entity-card${editing === side ? ' is-editing' : ''}`}>
       <span className="mas-entity-icon"><EntityIcon size={18} aria-hidden="true" /></span>
@@ -48,8 +50,10 @@ export function EdgeInspector({ edge, nodes, rules, topology, onChange, onClose,
   };
 
   const candidates = editing ? nodes.filter((node) => {
-    const expected = tool && editing === 'target' ? 'tool' : 'agent';
-    return node.type === expected && `${node.data.label || ''} ${node.id} ${node.data.role || ''}`.toLowerCase().includes(query.trim().toLowerCase());
+    const isToolNode = node.type === 'tool' || node.data.kind === 'tool';
+    const expectedTool = tool && editing === 'target';
+    if (expectedTool ? !isToolNode : node.type !== 'agent') return false;
+    return `${node.data.label || ''} ${node.id} ${node.data.role || ''}`.toLowerCase().includes(query.trim().toLowerCase());
   }) : [];
 
   return <aside className="mas-panel mas-inspector mas-edge-inspector" aria-label="连线属性">
@@ -98,8 +102,8 @@ export function EdgeInspector({ edge, nodes, rules, topology, onChange, onClose,
       </section>}
       <section className="mas-edge-section mas-edge-explanation">
         <h3>关系说明</h3><p>{definition.description}</p>
-        {tool && edge.source === 'hub' && <p>兼容行为：hub 没有显式绑定时会使用全局工具。移除最后一条绑定不等于禁止 hub 使用工具。</p>}
-        {!tool && (topology !== 'graph' || hubSubset) && <p>当前拓扑使用 hub 兼容执行路径，不保证按通用图逐条调度协作关系。</p>}
+        {tool && edge.source === 'planner' && <p>Planner 不直接执行工具。把 tool-agent 放进 Router 下游的 pool。</p>}
+        {!tool && (topology !== 'graph' || plannerSubset) && <p>当前是中心化执行路径：Planner 出计划，Router 拆给下游 Agent set，Verifier 关门。</p>}
         {!tool && ['verifier', 'critic'].includes(source?.data.role || '') && kind !== 'feedback'
           && <p>验证角色使用专用反馈路径，这条关系不代表无条件继续执行下游。</p>}
       </section>

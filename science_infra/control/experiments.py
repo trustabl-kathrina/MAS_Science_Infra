@@ -71,12 +71,12 @@ def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
 
 def default_llm() -> Dict[str, Any]:
     return {
-        "kind": "api",
-        "model": "",
-        "base_url": "",
+        "kind": "local",
+        "model": "Qwen3-4B",
+        "base_url": "http://127.0.0.1:8000/v1",
         "port": 8000,
-        "model_path": "/root/autodl-tmp/LLM/Qwen3-4B",
-        "gpu_memory_utilization": 0.45,
+        "model_path": "/root/autodl-tmp/MAS_Science_Infra/LLM/Qwen3-4B",
+        "gpu_memory_utilization": 0.9,
         "api_key_set": False,
     }
 
@@ -88,19 +88,19 @@ def default_workflow() -> Dict[str, Any]:
         data.setdefault("schema_version", "0.1.0")
         data.setdefault("agents", [])
         data.setdefault("edges", [])
-        data.setdefault("entry_agent", "hub")
+        data.setdefault("entry_agent", "planner")
         return data
     return {
         "schema_version": "0.1.0",
-        "topology": "hub_react",
-        "hub": {"role": "orchestrator", "skills": ["react_loop"]},
-        "tools": ["web_search", "wikipedia_search", "execute_python"],
+        "topology": "centralized",
+        "hub": {"role": "planner", "skills": []},
+        "tools": ["wikipedia_search", "google_search", "web_search", "python_coder", "think"],
         "llm": {"kind": "api", "model": "", "base_url": ""},
         "memory": {"agent": "messages", "system": "none"},
         "archive": {"window": "post_first_tool"},
         "agents": [],
         "edges": [],
-        "entry_agent": "hub",
+        "entry_agent": "planner",
     }
 
 
@@ -182,6 +182,15 @@ def normalize_rl_data_paths(rl: Dict[str, Any]) -> Dict[str, Any]:
             data[key] = [server_data_path(item) for item in raw]
         else:
             raise ValueError(f"data.{key} 必须是服务器路径或路径列表。")
+    raw_test = data.get("test_files")
+    if raw_test is None or raw_test == "":
+        data.pop("test_files", None)
+    elif isinstance(raw_test, str):
+        data["test_files"] = server_data_path(raw_test)
+    elif isinstance(raw_test, list) and all(isinstance(item, str) for item in raw_test):
+        data["test_files"] = [server_data_path(item) for item in raw_test]
+    else:
+        raise ValueError("data.test_files 必须是服务器路径或路径列表。")
     return out
 
 

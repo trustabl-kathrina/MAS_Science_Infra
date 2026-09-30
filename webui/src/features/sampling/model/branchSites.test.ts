@@ -11,7 +11,7 @@ const workflow: WorkflowSpec = {
   schema_version: '0.3',
   topology: 'graph',
   entry_agent: 'planner',
-  hub: { role: 'orchestrator', skills: ['react_loop'] },
+  hub: { role: 'planner', skills: [] },
   tools: ['web_search'],
   agents: [
     { id: 'planner', kind: 'planner', tools: ['web_search'] },
@@ -27,8 +27,6 @@ describe('branch site model', () => {
     const candidates = deriveBranchCandidates(workflow);
     expect(candidates.map((candidate) => candidate.label)).toEqual(expect.arrayContaining([
       'After planner turn',
-      'After web_search',
-      'After python_coder',
       'After verifier verification',
       'After router routing',
     ]));

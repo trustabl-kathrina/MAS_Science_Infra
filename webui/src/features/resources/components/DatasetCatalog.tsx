@@ -42,7 +42,7 @@ function DatasetEditor({ target, onSaved, onClose }: {
     </header>
     <form className="page-stack" onSubmit={event => { event.preventDefault(); void save(); }}>
       <FormField label="名称"><Input required disabled={action.pending !== null} value={name} onChange={event => setName(event.target.value)} /></FormField>
-      <FormField label="服务器 Parquet 路径">
+      <FormField label="服务器数据路径">
         <Input required disabled={action.pending !== null} value={path} placeholder="/root/autodl-tmp/MAS_Science_Infra/data/train.parquet" onChange={event => setPath(event.target.value)} />
       </FormField>
       <div className="action-bar"><Button type="submit" variant="primary" disabled={!dirty || action.pending !== null} loading={action.pending === 'save'}>保存数据</Button></div>
@@ -66,7 +66,7 @@ export const DatasetCatalog = memo(function DatasetCatalog({ active }: { active:
     {catalog.error && <InlineNotice tone="danger">数据目录读取失败：{catalog.error}</InlineNotice>}
     {editing && <DatasetEditor key={editing.resource?.id || 'new'} target={editing} onSaved={saved} onClose={() => setEditing(null)} />}
     <div className="resource-grid">{catalog.data?.items.map(resource => <article className="resource-card" key={resource.id}>
-      <header><span className="resource-icon"><Database size={20} /></span><span>Parquet</span></header>
+      <header><span className="resource-icon"><Database size={20} /></span><span>{resource.path.toLowerCase().endsWith('.json') ? 'JSON' : 'Parquet'}</span></header>
       <h2>{resource.name}</h2><p className="mono break-all">{resource.path}</p>
       <footer>
         <Button size="sm" variant="ghost" disabled={editing !== null} onClick={() => {

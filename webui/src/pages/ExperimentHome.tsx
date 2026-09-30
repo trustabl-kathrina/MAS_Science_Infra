@@ -23,7 +23,7 @@ const ExperimentCard = memo(function ExperimentCard({ id, state, current, onOpen
     <p className="experiment-card-id mono">ID · {id}</p>
     <div className="experiment-card-structure">
       {summary ? <><span>{summary.agentCount} 个 Agent</span><span>{summary.toolCount} 个工具</span>
-        <span className="experiment-card-topology" title={summary.topology}>{summary.topology === 'graph' ? '图编排' : ['hub_react', 'single'].includes(summary.topology) ? '单 Agent 工作流' : summary.topology}</span></>
+        <span className="experiment-card-topology" title={summary.topology}>{summary.topology === 'graph' ? '图编排' : ['centralized', 'hub_react', 'single'].includes(summary.topology) ? '中心化工作流' : summary.topology}</span></>
         : <span>{state?.error ? '结构摘要读取失败' : '正在读取结构摘要…'}</span>}
     </div>
     {state?.error && <div className="experiment-card-error">

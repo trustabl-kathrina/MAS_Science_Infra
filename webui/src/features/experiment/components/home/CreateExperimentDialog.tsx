@@ -79,7 +79,7 @@ export function CreateExperimentDialog({ open, onOpenChange, onCreated }: {
               pattern="[A-Za-z0-9_-]{1,64}" autoComplete="off" className="mono" onChange={event => setId(event.target.value)} />
           </FormField>
           <div className="experiment-create-preset"><Network size={18} /><div><strong>默认 Workflow</strong>
-            <p>hub Agent · 内置工具 · 随机种子 42</p></div></div>
+            <p>Planner + Router + 五个封装工具 · 随机种子 42</p></div></div>
           <p className="field-hint">不会复制其他实验的配置、密钥或运行记录，也不会自动调用模型。服务端已有的默认模型配置仍按原规则生效。</p>
           {error && <InlineNotice tone="danger">{error}</InlineNotice>}
           <div className="dialog-actions">

@@ -43,7 +43,7 @@ def _bare_agent():
     from tir_agent import TirAgent, ToolAgentInvoker
 
     agent = TirAgent.__new__(TirAgent)
-    agent.agent_id = "hub"
+    agent.agent_id = "planner"
     agent.execution_recorder = None
     agent.routers = {}
     agent._router_by_tool = {}
@@ -59,6 +59,7 @@ def _bare_agent():
     agent.tool_agent_invoker._agents = {}
     agent.tool_agent_invoker._blank_agents = {}
     agent.tool_agent_invoker._tool_map = {}
+    agent._blank_adapters = {}
     agent._opening = HumanMessage
     return agent
 
@@ -162,12 +163,13 @@ class TestLlmFailureTrajectory(unittest.TestCase):
             self.entropy_tokens = 8
             self.entropy_threshold = 0.15
             self.system_prompt = kwargs.get("system_prompt") or "sys"
-            self.agent_id = kwargs.get("agent_id") or "hub"
+            self.agent_id = kwargs.get("agent_id") or "planner"
             self.execution_recorder = kwargs.get("execution_recorder")
             self.routers = dict(kwargs.get("routers") or {})
             self.routers.pop("__blank_specs__", None)
             self._router_by_tool = {}
             self.tool_agent_invoker = tir_agent.ToolAgentInvoker({})
+            self._blank_adapters = {}
             self.llm = _BoomLLM()
             self.llm_finalize = _BoomLLM()
 

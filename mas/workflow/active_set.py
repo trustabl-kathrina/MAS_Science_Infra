@@ -498,6 +498,7 @@ def tree_from_plans(
                 parent_id=str(parent_id),
                 depth=int(p.depth),
                 role=str(p.role or "child"),
+                site_id=p.site_id or (str(m["site_id"]) if m.get("site_id") else None),
                 metrics=metrics,
                 boundary_snapshot_ref=m.get("snapshot_ref") or m.get("action_key"),
             )

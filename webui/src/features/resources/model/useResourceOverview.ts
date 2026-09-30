@@ -38,7 +38,7 @@ function overview(bundle: Bundle): ResourceOverview {
     training: {
       modelPath: bundle.rl.model_path || nestedPath, profile: bundle.rl.profile || '',
       agentIds: declared?.length ? declared.filter(agent => agent.trainable !== false).map(agent => agent.id)
-        : [bundle.workflow.entry_agent || 'hub'],
+        : [bundle.workflow.entry_agent || 'planner'],
     },
     data: {
       training: training.paths, validation: validation.paths,

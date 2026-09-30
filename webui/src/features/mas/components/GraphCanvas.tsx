@@ -9,12 +9,13 @@ import { Button } from '../../../shared/ui/button';
 import AgentNode from './AgentNode';
 import ToolNode from './ToolNode';
 import RouterNode from './RouterNode';
+import PoolNode from './PoolNode';
 import { NODE_TRANSFER } from './GraphPalette';
 import { WorkflowEdge } from './WorkflowEdge';
 import { ConnectionPreview } from './ConnectionPreview';
 import { CanvasToolButton, CanvasToolbar, CanvasToolbarDivider, CanvasToolbarGroup } from './CanvasToolbar';
 
-const nodeTypes = { agent: AgentNode, tool: ToolNode, router: RouterNode };
+const nodeTypes = { agent: AgentNode, tool: ToolNode, router: RouterNode, pool: PoolNode };
 const edgeTypes = { workflow: WorkflowEdge };
 type Props = Pick<ReactFlowProps<GraphNode, GraphEdge>,
   'nodes' | 'edges' | 'onNodesChange' | 'onEdgesChange' | 'onConnect' | 'onNodeClick' | 'onEdgeClick' | 'onPaneClick'
@@ -56,7 +57,7 @@ export const GraphCanvas = memo(function GraphCanvas({
     try { payload = JSON.parse(raw); }
     catch { onError('无法读取拖入的节点，请从节点库重新添加。'); return; }
     if (!payload || typeof payload !== 'object' || !('nodeType' in payload) || !('id' in payload)
-      || !['agent', 'tool', 'router'].includes(String(payload.nodeType)) || typeof payload.id !== 'string') {
+      || !['agent', 'tool', 'router', 'pool'].includes(String(payload.nodeType)) || typeof payload.id !== 'string') {
       onError('不支持此节点数据，请从节点库添加。');
       return;
     }

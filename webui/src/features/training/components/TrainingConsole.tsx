@@ -101,16 +101,17 @@ const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker,
     <div className="training-run-heading">
       <Terminal size={14} /><strong>控制台</strong>{picker}
       <strong>{TRAIN_STATE[state?.state || ''] || '读取状态…'}</strong>
-      {info?.algo != null && <span>{String(info.algo).toUpperCase()}</span>}
+      {state?.kind === 'eval' && <span>测试</span>}
+      {state?.kind !== 'eval' && info?.algo != null && <span>{String(info.algo).toUpperCase()}</span>}
       {info?.cuda_visible_devices != null && <span>GPU {String(info.cuda_visible_devices)}</span>}
       {info?.n_runners != null && <span>Runner {String(info.n_runners)}</span>}
       {info?.group_n != null && <span>n={String(info.group_n)}</span>}
       <RunClock started={state?.started_at} ended={state?.ended_at} active={active && Boolean(state?.running)} />
       <span className="console-connection" title={log.connection} aria-label={log.connection} />
       <span className="console-heading-spacer" />
-      <Button size="sm" variant="ghost" onClick={() => onSamples(runId)}>采样结果</Button>
-      <Snapshot experimentId={experimentId} runId={runId} />
-      {state?.running && <Button size="sm" variant="danger"
+      {state?.kind !== 'eval' && <Button size="sm" variant="ghost" onClick={() => onSamples(runId)}>采样结果</Button>}
+      {state?.kind !== 'eval' && <Snapshot experimentId={experimentId} runId={runId} />}
+      {state?.running && state.kind !== 'eval' && <Button size="sm" variant="danger"
         disabled={state.state === 'stopping' && state.failure_stage !== 'stop' || action.pending !== null}
         onClick={() => void action.run('stop', async () => { await stopTrain(runId); })}>
         {state.failure_stage === 'stop' ? '重试停止' : state.state === 'stopping' ? '停止中…' : '停止训练'}
@@ -142,7 +143,7 @@ const RunOutput = memo(function RunOutput({ experimentId, runId, active, picker,
         setScroll({ top: element.scrollTop, height: element.clientHeight });
         if (element.scrollHeight - element.scrollTop - element.clientHeight > 40) setFollow(false);
       }}>
-      {!log.lines.length && <p className="training-log-empty">等待训练输出…</p>}
+      {!log.lines.length && <p className="training-log-empty">{state?.kind === 'eval' ? '等待测试输出…' : '等待训练输出…'}</p>}
       <div style={{ height: log.lines.length * LINE_HEIGHT, position: 'relative' }}>
         <div style={{ position: 'absolute', top: first * LINE_HEIGHT, left: 0, minWidth: '100%' }}>
           {log.lines.slice(first, end).map(line => <div key={line.id} className={`training-log-line${search && line.text.toLocaleLowerCase().includes(search) ? ' is-match' : ''}`}>
@@ -160,8 +161,8 @@ export const TrainingConsole = memo(function TrainingConsole({ experimentId, req
 }) {
   const activity = useTraining();
   const { viewTraining } = useRuntimeCommands();
-  const load = useCallback((signal: AbortSignal) => runtimeApi.trainingRuns(experimentId, signal), [experimentId]);
-  const history = usePollingResource(`training-history:${experimentId}:${activity.data?.runId}:${activity.data?.state}`, load, undefined, active);
+  const load = useCallback((signal: AbortSignal) => runtimeApi.trainingRuns(experimentId, signal, 0, 'train,eval'), [experimentId]);
+  const history = usePollingResource(`training-history:${experimentId}:${requestedRunId}:${activity.data?.runId}:${activity.data?.state}`, load, active ? 2000 : undefined, active);
   const [selected, setSelected] = useState<string | undefined>(requestedRunId);
   useEffect(() => { if (requestedRunId) setSelected(requestedRunId); }, [requestedRunId]);
   useEffect(() => {
@@ -174,7 +175,9 @@ export const TrainingConsole = memo(function TrainingConsole({ experimentId, req
         {!runId && <option value="">尚无训练运行</option>}
         {runId && !history.data?.runs.some(item => item.run_id === runId) && <option value={runId}>{runId}</option>}
         {history.data?.runs.map(item => <option key={item.run_id} value={item.run_id}>
-          {item.run_id === activity.data?.runId && item.running ? '当前运行' : '历史运行'} · {item.run_id}
+          {item.kind === 'eval'
+            ? `${item.running ? '当前测试' : '测试'}`
+            : item.run_id === activity.data?.runId && item.running ? '当前运行' : '历史运行'} · {item.run_id}
         </option>)}
       </Select>;
   return <div className="training-console">

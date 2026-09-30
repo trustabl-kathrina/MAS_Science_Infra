@@ -5,12 +5,18 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+import psutil
 
 from science_infra.control.events import BUS
 from science_infra.control.experiments import (
@@ -65,6 +71,187 @@ async def llm_health(
     return await probe_llm(config, experiment_id=experiment_id)
 
 
+def _port_open(host: str, port: int, timeout: float = 0.4) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _pids_listening(port: int) -> List[int]:
+    hexport = f"{port:04X}".lower()
+    inodes: set[str] = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(table, encoding="utf-8") as handle:
+                next(handle, None)
+                for line in handle:
+                    parts = line.split()
+                    if len(parts) < 10:
+                        continue
+                    local = parts[1].rsplit(":", 1)
+                    if len(local) != 2 or local[1].lower() != hexport:
+                        continue
+                    if parts[3] != "0A":
+                        continue
+                    inodes.add(parts[9])
+        except OSError:
+            continue
+    if not inodes:
+        return []
+    found: set[int] = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        fd_dir = entry / "fd"
+        try:
+            for link in fd_dir.iterdir():
+                try:
+                    target = os.readlink(link)
+                except OSError:
+                    continue
+                if target.startswith("socket:[") and target[8:-1] in inodes:
+                    found.add(int(entry.name))
+                    break
+        except OSError:
+            continue
+    return sorted(found)
+
+
+def _kill_process_tree(pid: int, *, timeout: float = 20.0) -> None:
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = proc.children(recursive=True)
+    for item in [proc, *children]:
+        try:
+            item.terminate()
+        except psutil.Error:
+            continue
+    _, alive = psutil.wait_procs([proc, *children], timeout=timeout)
+    for item in alive:
+        try:
+            item.kill()
+        except psutil.Error:
+            continue
+
+
+def _gpu_vllm_pids() -> List[int]:
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return []
+    try:
+        out = subprocess.check_output(
+            [smi, "--query-compute-apps=pid", "--format=csv,noheader"],
+            text=True,
+            timeout=8,
+        )
+    except Exception:
+        return []
+    pids: List[int] = []
+    for line in out.splitlines():
+        raw = line.strip().split(",")[0].strip()
+        if not raw.isdigit():
+            continue
+        pid = int(raw)
+        try:
+            proc = psutil.Process(pid)
+        except psutil.NoSuchProcess:
+            continue
+        blob_parts: List[str] = []
+        current: Optional[psutil.Process] = proc
+        for _ in range(8):
+            if current is None:
+                break
+            try:
+                blob_parts.append(" ".join(current.cmdline()).lower())
+                current = current.parent()
+            except psutil.Error:
+                break
+        blob = " ".join(blob_parts)
+        if "science-infra" in blob or "ray::" in blob:
+            continue
+        if (
+            "vllm" in blob
+            or "openai.api_server" in blob
+            or "served-model-name" in blob
+            or "multiprocessing.spawn" in blob
+        ):
+            pids.append(pid)
+    return pids
+
+
+def _free_local_llm_port(port: int) -> List[int]:
+    """Stop managed vLLM and any leftover listener/GPU workers on this port."""
+    killed: List[int] = []
+    try:
+        PROCS.stop("llm", timeout=20.0, reason="replaced")
+    except Exception:
+        pass
+    for pid in _pids_listening(port):
+        _kill_process_tree(pid)
+        killed.append(pid)
+    for pid in _gpu_vllm_pids():
+        _kill_process_tree(pid)
+        killed.append(pid)
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        if not _port_open("127.0.0.1", port) and not _gpu_vllm_pids():
+            break
+        time.sleep(0.4)
+    return sorted(set(killed))
+
+
+def _openai_models(base_url: str, timeout: float = 3.0) -> Optional[List[str]]:
+    url = base_url.rstrip("/") + "/models"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer EMPTY"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return None
+    ids: List[str] = []
+    for item in payload.get("data") or []:
+        if isinstance(item, dict) and item.get("id"):
+            ids.append(str(item["id"]))
+    return ids
+
+
+def _reuse_local_llm(
+    exp_id: str,
+    *,
+    llm: Dict[str, Any],
+    resource: Any,
+    base_url: str,
+    model_path: str,
+    models: List[str],
+) -> Dict[str, Any]:
+    served = str(llm.get("model") or Path(model_path).name)
+    if resource is None:
+        from science_infra.control.experiments import save_section
+
+        llm2 = dict(llm)
+        llm2["kind"] = "local"
+        llm2["base_url"] = base_url
+        if not llm2.get("model"):
+            llm2["model"] = served
+        save_section(exp_id, "llm", llm2)
+    BUS.publish(
+        exp_id,
+        "llm_status",
+        {"state": "ready", "run_id": "reused", "base_url": base_url, "reused": True, "models": models},
+    )
+    return {
+        "run_id": "reused",
+        "base_url": base_url,
+        "reused": True,
+        "models": models,
+        "argv": [],
+    }
+
+
 def start_local_llm(exp_id: str, *, stop_if_running: bool = True) -> Dict[str, Any]:
     bundle = load_bundle(exp_id)
     resource = resolve_binding(exp_id, "inference")
@@ -81,30 +268,7 @@ def start_local_llm(exp_id: str, *, stop_if_running: bool = True) -> Dict[str, A
         raise ValueError("llm.model_path required for local start")
     port = int(llm.get("port") or 8000)
     gpu_mem = float(llm.get("gpu_memory_utilization") or 0.45)
-    vllm = shutil.which("vllm")
-    if vllm:
-        argv = [
-            vllm,
-            "serve",
-            model_path,
-            "--port",
-            str(port),
-            "--gpu-memory-utilization",
-            str(gpu_mem),
-        ]
-    else:
-        # Fallback: python -m vllm.entrypoints.openai.api_server
-        argv = [
-            sys.executable,
-            "-m",
-            "vllm.entrypoints.openai.api_server",
-            "--model",
-            model_path,
-            "--port",
-            str(port),
-            "--gpu-memory-utilization",
-            str(gpu_mem),
-        ]
+    served_name = str(llm.get("model") or Path(model_path).name)
     base_url = f"http://127.0.0.1:{port}/v1"
     if resource is not None:
         endpoint = urlsplit(effective.base_url)
@@ -119,13 +283,63 @@ def start_local_llm(exp_id: str, *, stop_if_running: bool = True) -> Dict[str, A
                 "http://127.0.0.1:8000/v1。"
             )
         base_url = effective.base_url
+
+    managed = PROCS.active("llm")
+    existing = _openai_models(base_url)
+    same_model = bool(existing) and (
+        served_name in existing or any(served_name in name for name in existing)
+    )
+    if managed is not None and same_model:
+        return _reuse_local_llm(
+            exp_id, llm=llm, resource=resource, base_url=base_url,
+            model_path=model_path, models=existing or [served_name],
+        )
+
+    _free_local_llm_port(port)
+    if _port_open("127.0.0.1", port):
+        raise RuntimeError(f"端口 {port} 仍被占用，无法为所选本地模型启动 vLLM。")
+
+    extra = [
+        "--served-model-name",
+        served_name,
+        "--trust-remote-code",
+        "--host",
+        "0.0.0.0",
+        "--max-model-len",
+        "8192",
+    ]
+    vllm = shutil.which("vllm")
+    if vllm:
+        argv = [
+            vllm,
+            "serve",
+            model_path,
+            "--port",
+            str(port),
+            "--gpu-memory-utilization",
+            str(gpu_mem),
+            *extra,
+        ]
+    else:
+        argv = [
+            sys.executable,
+            "-m",
+            "vllm.entrypoints.openai.api_server",
+            "--model",
+            model_path,
+            "--port",
+            str(port),
+            "--gpu-memory-utilization",
+            str(gpu_mem),
+            *extra,
+        ]
     if resource is None:
         from science_infra.control.experiments import save_section
 
         llm2 = dict(llm)
         llm2["base_url"] = base_url
         if not llm2.get("model"):
-            llm2["model"] = model_path
+            llm2["model"] = served_name
         save_section(exp_id, "llm", llm2)
 
     if stop_if_running and PROCS.active("train"):
@@ -146,13 +360,81 @@ def start_local_llm(exp_id: str, *, stop_if_running: bool = True) -> Dict[str, A
         replace=True,
     )
     BUS.publish(exp_id, "llm_status", {"state": "starting", "run_id": mp.run_id, "base_url": base_url})
-    return {"run_id": mp.run_id, "base_url": base_url, "argv": argv}
+    return {"run_id": mp.run_id, "base_url": base_url, "argv": argv, "reused": False}
 
 
 def stop_local_llm(exp_id: str) -> Dict[str, Any]:
-    st = PROCS.stop("llm")
-    BUS.publish(exp_id, "llm_status", {"state": "stopped"})
-    return st or {"running": False}
+    bundle = load_bundle(exp_id)
+    resource = resolve_binding(exp_id, "inference")
+    llm = resource.data["config"] if resource else bundle["llm"]
+    port = int(llm.get("port") or 8000)
+    killed = _free_local_llm_port(port)
+    BUS.publish(exp_id, "llm_status", {"state": "stopped", "killed": killed})
+    return {"running": False, "killed": killed}
+
+
+async def list_llm_options(
+    exp_id: str,
+    *,
+    kind: str = "local",
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    port: Optional[int] = None,
+) -> Dict[str, Any]:
+    """List models the UI can pick: local weights under LLM/, or remote /v1/models."""
+    kind = (kind or "local").strip().lower()
+    if kind == "local":
+        from science_infra.control.training import discover_local_models
+
+        listen_port = int(port or 8000)
+        serving_url = f"http://127.0.0.1:{listen_port}/v1"
+        served = _openai_models(serving_url) or []
+        served_set = {str(name) for name in served}
+        items: List[Dict[str, Any]] = []
+        for candidate in discover_local_models():
+            name = str(candidate.get("name") or "")
+            items.append(
+                {
+                    "id": str(candidate.get("path") or name),
+                    "name": name,
+                    "source": "local",
+                    "path": candidate.get("path"),
+                    "model_type": candidate.get("model_type"),
+                    "architectures": list(candidate.get("architectures") or []),
+                    "served": name in served_set or any(name and name in s for s in served_set),
+                }
+            )
+        local_root = str(repo_root() / "LLM")
+        return {
+            "kind": "local",
+            "local_root": local_root,
+            "items": items,
+            "serving": {"base_url": serving_url, "models": served} if served else None,
+            "message": None if items else f"在 {local_root} 下没有发现带 config.json 的本地模型。",
+        }
+
+    probe = await probe_llm(
+        resolve_legacy_llm_config(
+            exp_id,
+            llm={"kind": "api", "base_url": base_url or "", "model": ""},
+            base_url=base_url,
+            api_key=api_key,
+            kind="api",
+            model="",
+        ),
+        experiment_id=exp_id,
+    )
+    items = [
+        {"id": str(mid), "name": str(mid), "source": "api", "served": False}
+        for mid in probe.get("models") or []
+    ]
+    return {
+        "kind": "api",
+        "items": items,
+        "probe": probe,
+        "serving": None,
+        "message": probe.get("message"),
+    }
 
 
 def list_gpus() -> Dict[str, Any]:
@@ -306,49 +588,31 @@ def mas_palette() -> Dict[str, Any]:
         skills = REGISTRY.list_skills()
         roles = REGISTRY.list_roles()
     except Exception:
-        skills = ["react_loop", "verifier"]
-        roles = ["hub", "verifier"]
-    tools = ["web_search", "wikipedia_search", "execute_python"]
+        skills = ["verifier"]
+        roles = ["planner", "verifier"]
+    tools = ["wikipedia_search", "google_search", "web_search", "python_coder", "think"]
     edge_kinds = ["message", "tool_call", "feedback", "route", "sample_barrier"]
     # agent-framework W2: unified agent palette (schema 0.3). The UI renders a
     # single "Agent" drag category from these kind templates; legacy roles/tools
     # fields stay for the transition period.
     agent_templates = [
         {
-            "id": "tool_agent",
-            "kind": "tool",
-            "label": "Tool Agent",
-            "hint": "封装工具为 agent，可开 LLM 后端",
-        },
-        {
-            "id": "blank",
-            "kind": "blank",
-            "label": "空白 Agent",
-            "hint": "自定义 profile 多专家",
+            "id": "planner",
+            "kind": "planner",
+            "label": "Planner",
+            "hint": "任务分解，输出 sub_goal 与下游 tool/子任务",
         },
         {
             "id": "verifier",
             "kind": "verifier",
             "label": "Verifier",
-            "hint": "校验上游产出并反馈",
+            "hint": "校验 tool-agent 产出并反馈",
         },
         {
-            "id": "planner",
-            "kind": "planner",
-            "label": "Planner",
-            "hint": "任务分解与派发",
-        },
-        {
-            "id": "hub",
-            "kind": "hub",
-            "label": "Hub",
-            "hint": "ReAct 主循环入口",
-        },
-        {
-            "id": "router",
-            "kind": "router",
-            "label": "Router",
-            "hint": "多专家路由：从 candidates 中选择一个 agent",
+            "id": "blank",
+            "kind": "blank",
+            "label": "自定义 Agent",
+            "hint": "JSON Schema 自描述的空白 agent",
         },
     ]
     tool_agents = []
@@ -366,7 +630,7 @@ def mas_palette() -> Dict[str, Any]:
             )
     except Exception:
         tool_agents = [
-            {"id": t, "backend": "pure", "llm_required": False, "description": ""}
+            {"id": t, "backend": "llm", "llm_required": True, "description": ""}
             for t in tools
         ]
     return {
@@ -388,93 +652,16 @@ def mas_palette() -> Dict[str, Any]:
             "contradiction",
             "failure_trigger",
         ],
-        "templates": [
-            {
-                "id": "hub_react",
-                "label": "Hub ReAct (executable)",
-                "workflow": {
-                    "schema_version": "0.1.0",
-                    "topology": "hub_react",
-                    "entry_agent": "hub",
-                    "hub": {"role": "orchestrator", "skills": ["react_loop"]},
-                    "tools": ["web_search", "wikipedia_search", "execute_python"],
-                    "agents": [
-                        {
-                            "id": "hub",
-                            "role": "orchestrator",
-                            "skills": ["react_loop"],
-                            "tools": ["web_search", "wikipedia_search", "execute_python"],
-                            "trainable": True,
-                        }
-                    ],
-                    "edges": [],
-                },
-            },
-            {
-                "id": "hub_verify",
-                "label": "Hub + Verifier feedback",
-                "workflow": {
-                    "schema_version": "0.2.0",
-                    "topology": "graph",
-                    "entry_agent": "hub",
-                    "hub": {
-                        "role": "orchestrator",
-                        "skills": ["react_loop"],
-                        "verify": "verifier",
-                        "max_feedback_hops": 1,
-                    },
-                    "tools": ["web_search", "wikipedia_search", "execute_python"],
-                    "agents": [
-                        {
-                            "id": "hub",
-                            "role": "orchestrator",
-                            "skills": ["react_loop"],
-                            "tools": ["web_search", "wikipedia_search", "execute_python"],
-                            "trainable": True,
-                        },
-                        {"id": "verifier", "role": "verifier", "skills": ["verifier"], "trainable": False},
-                    ],
-                    "edges": [{"from": "verifier", "to": "hub", "kind": "feedback"}],
-                },
-            },
-            {
-                "id": "pev_draft",
-                "label": "Planner-Executor-Verifier",
-                "workflow": {
-                    "schema_version": "0.2.0",
-                    "topology": "graph",
-                    "entry_agent": "planner",
-                    "hub": {"role": "orchestrator", "skills": ["react_loop"]},
-                    "tools": ["web_search", "execute_python"],
-                    "agents": [
-                        {
-                            "id": "planner",
-                            "role": "planner",
-                            "skills": ["react_loop"],
-                            "system_prompt": "You are a planner. Decompose the task, then hand off.",
-                            "trainable": True,
-                        },
-                        {
-                            "id": "executor",
-                            "role": "executor",
-                            "skills": ["react_loop"],
-                            "tools": ["web_search", "execute_python"],
-                            "system_prompt": "You are an executor. Use tools to solve the task.",
-                            "trainable": True,
-                        },
-                        {"id": "verifier", "role": "verifier", "skills": ["verifier"], "trainable": False},
-                    ],
-                    "edges": [
-                        {"from": "planner", "to": "executor", "kind": "route"},
-                        {"from": "executor", "to": "verifier", "kind": "message"},
-                        {"from": "verifier", "to": "planner", "kind": "feedback"},
-                        {"from": "executor", "to": "execute_python", "kind": "tool_call"},
-                        {"from": "executor", "to": "web_search", "kind": "tool_call"},
-                    ],
-                },
-            },
-        ],
+        "templates": _mas_palette_templates(),
     }
+
+
+def _mas_palette_templates() -> List[Dict[str, Any]]:
+    """Load GraphPalette templates from ``mas/specs/templates/*.yaml``."""
+    _ensure_tir_on_path()
+    from workflow.templates import list_palette_templates
+
+    return list_palette_templates()
 
 
 def sample_parquet_tasks(
@@ -483,48 +670,16 @@ def sample_parquet_tasks(
     n: int = 5,
     source: str = "gsm8k",
 ) -> List[Dict[str, Any]]:
-    """Sample first N rows from a tir_agent parquet (same logic as run.sh live-api-data)."""
-    import ast
+    """Sample the first N rows from a parquet or JSON task file."""
+    from science_infra.control.task_files import load_task_rows
 
-    import pandas as pd
-
-    path = Path(parquet)
-    if not path.is_file():
-        # Allow paths relative to tir_agent/data or tir_agent root
-        cand = tir_agent_root() / parquet
-        if cand.is_file():
-            path = cand
-        else:
-            cand2 = tir_agent_root() / "data" / Path(parquet).name
-            if cand2.is_file():
-                path = cand2
-            else:
-                raise FileNotFoundError(f"parquet not found: {parquet}")
-    df = pd.read_parquet(path)
+    rows = load_task_rows(parquet)
     src = (source or "").strip()
     if src and src.lower() not in ("", "all", "*"):
-        df = df[df["source"].astype(str) == src]
-    if len(df) == 0:
-        raise ValueError(f"no rows after filter source={source!r} in {path}")
-    df = df.head(max(1, int(n)))
-    tasks: List[Dict[str, Any]] = []
-    for row in df.to_dict(orient="records"):
-        answers = row.get("answers")
-        if isinstance(answers, str):
-            try:
-                answers = ast.literal_eval(answers)
-            except Exception:
-                answers = [row.get("answer")]
-        tasks.append(
-            {
-                "id": str(row.get("id") or ""),
-                "question": str(row.get("question") or ""),
-                "answer": str(row.get("answer") or ""),
-                "answers": answers if isinstance(answers, list) else [str(row.get("answer") or "")],
-                "source": str(row.get("source") or "gsm8k"),
-            }
-        )
-    return tasks
+        rows = [row for row in rows if str(row.get("source") or "") == src]
+    if not rows:
+        raise ValueError(f"no rows after filter source={source!r} in {parquet}")
+    return rows[: max(1, int(n))]
 
 
 DEMO_COLLECT_TASKS: List[Dict[str, Any]] = [

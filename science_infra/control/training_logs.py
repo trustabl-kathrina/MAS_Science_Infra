@@ -29,7 +29,7 @@ def training_run(experiment_id: str, run_id: str) -> dict:
     except FileNotFoundError as error:
         raise HTTPException(404, "实验不存在") from error
     row = PROCS.status(run_id, experiment_id)
-    if not row or row.get("kind") != "train" or row.get("experiment_id") != experiment_id:
+    if not row or row.get("kind") not in {"train", "eval"} or row.get("experiment_id") != experiment_id:
         raise HTTPException(404, "当前实验中没有此训练运行")
     return row
 

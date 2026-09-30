@@ -41,4 +41,26 @@ describe('sampling canvas opportunity mapping', () => {
     expect(mapped.get(implicit.id)?.anchor.tool_id).toBe('blank:expert');
     expect(edgeForOpportunity(mapped, 'tool_result:planner:tool_id=blank:expert')).toBe(implicit.id);
   });
+
+  it('maps a planner to router route edge', () => {
+    const route: GraphEdge = {
+      id: 'e-planner-route_exec-0',
+      source: 'planner',
+      target: 'route_exec',
+      type: 'workflow',
+      data: { kind: 'route' },
+    };
+    const mapped = opportunitiesByEdge([
+      opportunity({
+        id: 'agent_complete:planner:',
+        node_id: 'planner',
+        edge_source: 'planner',
+        edge_target: 'route_exec',
+        anchor: { kind: 'after_agent_turn', agent_id: 'planner' },
+        label: 'planner 窗口结束后',
+      }),
+    ], [route]);
+    expect(mapped.get(route.id)?.anchor.kind).toBe('after_agent_turn');
+    expect(edgeForOpportunity(mapped, 'agent_complete:planner:')).toBe(route.id);
+  });
 });

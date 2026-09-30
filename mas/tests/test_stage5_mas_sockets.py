@@ -13,13 +13,13 @@ if str(ROOT) not in sys.path:
 
 
 class TestSkillHotPath(unittest.TestCase):
-    def test_react_loop_is_invoked(self):
+    def test_default_skills_are_empty(self):
         from workflow import Collector
 
         traj = Collector(mock=True).collect_one(
             {"id": "s", "question": "1+1", "answer": "2", "source": "gsm8k", "_mock_answer": "2"}
         )
-        self.assertIn("react_loop", traj.meta.get("skills") or [])
+        self.assertEqual(traj.meta.get("skills") or [], [])
 
     def test_custom_skill_and_route(self):
         from workflow.plugins import REGISTRY
@@ -92,7 +92,7 @@ archive:
         traj = ExecutionService(mock=True, spec=spec).run(
             {"id": "y", "question": "1+1", "answer": "2", "_mock_answer": "2"}
         )
-        self.assertEqual(traj.meta.get("tools"), ["web_search", "execute_python"])
+        self.assertEqual(traj.meta.get("tools"), ["web_search", "python_coder"])
         self.assertNotIn("wikipedia_search", traj.meta.get("tools") or [])
         names = [e.payload.get("name") for e in traj.events if e.payload.get("name")]
         self.assertNotIn("wikipedia_search", names)

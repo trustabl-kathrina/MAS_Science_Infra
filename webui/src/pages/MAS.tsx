@@ -10,6 +10,7 @@ import { useModelReadiness } from '../features/mas/model/useModelReadiness';
 import type { TraceFocusRequest } from '../features/mas/types';
 import { TrainingSettings } from '../features/settings/components/TrainingSettings';
 import { HarnessPanel } from '../features/harness/components/HarnessPanel';
+import { LLMPanel } from '../features/llm/components/LLMPanel';
 import type { SettingsSection } from '../features/settings/model/sections';
 import type { ResourceCategory } from '../app/navigation';
 import { useSamplingPreview } from '../features/sampling/model/useSamplingPreview';
@@ -43,7 +44,8 @@ export const MASPanel = memo(function MASPanel(props: MASPanelProps) {
   const [selectedSamplingOpportunity, setSelectedSamplingOpportunity] = useState<string | null>(null);
   const workflowExpanded = useRef(false);
   const [modelRequest, setModelRequest] = useState(0);
-  const editing = active && section !== 'diagnostics';
+  const documentSection = section === 'diagnostics' || section === 'inference';
+  const editing = active && !documentSection;
   const workflowVisible = editing && !expanded;
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [debugOpen, setDebugOpen] = useState(false);
@@ -150,6 +152,11 @@ export const MASPanel = memo(function MASPanel(props: MASPanelProps) {
         open={debugOpen} mode={debugMode} executable={executable} readiness={readiness}
         onClose={closeDebug} onLive={openDebug} onConfigureModel={configureModel} onLocate={locate} />}
     </div>
+    <RetainedView active={active && section === 'inference'} className="workspace-document-scroll">
+      <div className="workspace-document"><h1>模型连接</h1>
+        <LLMPanel expId={props.expId} bundle={props.bundle} onReload={props.onReload} embedded />
+      </div>
+    </RetainedView>
     <RetainedView active={active && section === 'diagnostics'} className="workspace-document-scroll">
       <div className="workspace-document"><h1>诊断工具</h1>
         <HarnessPanel expId={props.expId} bundle={props.bundle} meta={props.meta} onReload={props.onReload} embedded />

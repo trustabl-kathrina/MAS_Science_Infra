@@ -274,7 +274,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
         fields: Dict[str, Any] = {
             "expand_in_runner": True,
             "sampling_strategy": str(
-                self.tir_config.get("sampling_strategy") or self.tir_algo
+                self.tir_config.get("sampling_strategy") or getattr(self, "tir_algo", None) or "arpo"
             ),
             "sampling_budget": budget,
             "max_branch_depth": int(self.tir_config.get("max_branch_depth", 2)),
@@ -308,7 +308,7 @@ class TirAgentModeDaemon(AgentModeDaemon):
                 sample = self._task_id_to_original_sample[rid]
                 sample["expand_in_runner"] = True
                 sample["sampling_strategy"] = str(
-                    self.tir_config.get("sampling_strategy") or self.tir_algo
+                    self.tir_config.get("sampling_strategy") or getattr(self, "tir_algo", None) or "arpo"
                 )
                 sample["sampling_budget"] = int(budget)
                 sample["max_branch_depth"] = int(self.tir_config.get("max_branch_depth", 2))

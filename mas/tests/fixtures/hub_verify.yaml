@@ -1,14 +1,14 @@
-schema_version: "0.1.0"
-topology: hub_react
+schema_version: "0.3"
+topology: centralized
+entry_agent: planner
 hub:
-  role: orchestrator
-  skills:
-    - react_loop
+  role: planner
+  skills: []
   verify: verifier
   max_feedback_hops: 1
 tools:
   - web_search
-  - execute_python
+  - python_coder
 llm:
   kind: api
   model: ""

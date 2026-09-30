@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useState } from 'react';
-import { Bot, Flag, Route, Trash2, Wrench, X } from 'lucide-react';
+import { Bot, Boxes, Flag, Route, Trash2, Wrench, X } from 'lucide-react';
 import type { AgentKind, Config, Palette, RouterStrategy } from '../../../shared/api/types';
 import type { GraphNode, GraphNodeData, SelectedGraphNode } from '../types';
 import { Button } from '../../../shared/ui/button';
@@ -17,7 +17,6 @@ import {
 } from '../../resources/components/AgentModelSelect';
 
 const AGENT_KINDS: Array<{ value: Exclude<AgentKind, 'tool'>; label: string }> = [
-  { value: 'hub', label: 'Hub' },
   { value: 'planner', label: 'Planner' },
   { value: 'verifier', label: 'Verifier' },
   { value: 'blank', label: '自定义 Agent' },
@@ -50,7 +49,7 @@ function JsonObjectField({ label, value, onChange }: {
   </FormField>;
 }
 
-function AgentModelFields({ data, defaultModel, options, loading, error, onRefresh, onPatch }: {
+function AgentModelFields({ data, defaultModel, options, loading, error, onRefresh, onPatch, allowTrainable = true }: {
   data: GraphNodeData;
   defaultModel: AgentDefaultModel;
   options: AgentModelOption[];
@@ -58,6 +57,7 @@ function AgentModelFields({ data, defaultModel, options, loading, error, onRefre
   error: string | null;
   onRefresh: () => Promise<unknown>;
   onPatch: (patch: Partial<GraphNodeData>) => void;
+  allowTrainable?: boolean;
 }) {
   const trainable = data.trainable !== false;
   const [trainableError, setTrainableError] = useState('');
@@ -82,12 +82,14 @@ function AgentModelFields({ data, defaultModel, options, loading, error, onRefre
         trainable={trainable} options={options} loading={loading} error={error} onRefresh={onRefresh}
         onChange={(model) => onPatch({ model })} />
     </FormField>
-    <label className="mas-checkbox-row"><Checkbox checked={trainable}
-      onChange={(event) => changeTrainable(event.target.checked)} />参与训练</label>
-    {trainableError && <InlineNotice tone="warning">{trainableError}</InlineNotice>}
-    <p className="field-hint">{trainable
-      ? '该 Agent 的模型调用进入训练优化；模型必须具备可训练权重。'
-      : '该 Agent 仍参与 Workflow 执行，但模型参数保持冻结。'}</p>
+    {allowTrainable ? <>
+      <label className="mas-checkbox-row"><Checkbox checked={trainable}
+        onChange={(event) => changeTrainable(event.target.checked)} />参与训练</label>
+      {trainableError && <InlineNotice tone="warning">{trainableError}</InlineNotice>}
+      <p className="field-hint">{trainable
+        ? '该 Agent 的模型调用进入训练优化；模型必须具备可训练权重。'
+        : '该 Agent 仍参与 Workflow 执行，但模型参数保持冻结。'}</p>
+    </> : <p className="field-hint">tool-agent 不可训练，只参与执行。</p>}
   </>;
 }
 
@@ -114,15 +116,17 @@ export const NodeInspector = memo(function NodeInspector({
   const isIntelligentTool = selected.type === 'agent' && selected.data.kind === 'tool';
   const isTool = isLegacyTool || isIntelligentTool;
   const isRouter = selected.type === 'router';
-  const Icon = isTool ? Wrench : isRouter ? Route : Bot;
+  const isPool = selected.type === 'pool';
+  const Icon = isPool ? Boxes : isTool ? Wrench : isRouter ? Route : Bot;
+  const members = selected.data.members || [];
+  const toolChoices = (palette.tool_agents || []).filter((tool) => !members.includes(tool.id));
   const tools = Array.from(new Set([...(palette.tools || []), ...(selected.data.tools || [])]));
   const agents = nodes.filter((node) => node.type === 'agent' && node.data.kind !== 'tool');
-  const toolNodes = nodes.filter((node) => node.type === 'tool' || node.data.kind === 'tool');
-  const routerCandidates = selected.data.candidates || [];
-  const routerStrategy = selected.data.strategy || 'llm_choice';
+  const routerCandidates = selected.data.candidates || selected.data.members || [];
+  const routerStrategy = selected.data.strategy || 'from_plan';
   return <aside className="mas-panel mas-inspector" aria-label="节点属性">
     <div className="mas-panel-heading">
-      <div><span className="mas-panel-caption">{isTool ? 'Tool' : isRouter ? 'Router' : 'Agent'} 属性</span><h2><Icon size={16} />{selected.id}</h2></div>
+      <div><span className="mas-panel-caption">{isPool ? 'Pool' : isTool ? 'Tool' : isRouter ? 'Router' : 'Agent'} 属性</span><h2><Icon size={16} />{isPool ? 'tool-agent pool' : selected.id}</h2></div>
       <Button size="sm" variant="ghost" onClick={onClose} aria-label="关闭节点属性"><X size={16} /></Button>
     </div>
     <div className="mas-panel-body">
@@ -132,11 +136,11 @@ export const NodeInspector = memo(function NodeInspector({
       </div> : isIntelligentTool ? <>
         <div className="mas-property-section">
           <FormField label="工具标识"><Input value={selected.id} readOnly className="mono" /></FormField>
-          <p className="field-hint">{selected.data.description || '智能工具可使用模型、Memory 和独立训练配置。'}</p>
+          <p className="field-hint">{selected.data.description || '封装 tool-agent：内部调用工具内核，再用 LLM 完成任务。不可训练。'}</p>
           <FormField label="角色"><Input value={selected.data.role || 'tool'} onChange={(event) => onPatch({ role: event.target.value })} /></FormField>
           <AgentModelFields data={selected.data} defaultModel={defaultModel}
             options={modelOptions} loading={modelOptionsLoading} error={modelOptionsError}
-            onRefresh={onRefreshModelOptions} onPatch={onPatch} />
+            onRefresh={onRefreshModelOptions} onPatch={onPatch} allowTrainable={false} />
           <FormField label="系统提示词">
             <Textarea rows={7} value={selected.data.system_prompt || ''} onChange={(event) => onPatch({ system_prompt: event.target.value })} />
           </FormField>
@@ -149,11 +153,44 @@ export const NodeInspector = memo(function NodeInspector({
           <JsonObjectField label="profile" value={selected.data.profile || {}} onChange={(profile) => onPatch({ profile })} />
           <JsonObjectField label="meta" value={selected.data.meta || {}} onChange={(meta) => onPatch({ meta })} />
         </details>
-      </> : isRouter ? <>
+      </> : isPool ? <div className="mas-property-section">
+        <p className="field-hint">Router 的下游是这个 pool。在这里增加或删除 tool-agent，成员不可训练。</p>
+        <ul className="mas-pool-editor">
+          {members.map((member) => {
+            const tiers = selected.data.memberTiers || {};
+            const tier = tiers[member] === 'pro' ? 'pro' : 'lite';
+            return <li key={member}>
+              <span>{member}</span>
+              <Select className="mas-pool-tier" aria-label={`${member} 级别`} value={tier} onChange={(event) => onPatch({
+                memberTiers: { ...tiers, [member]: event.target.value === 'pro' ? 'pro' : 'lite' },
+              })}>
+                <option value="lite">lite</option>
+                <option value="pro">pro</option>
+              </Select>
+              <Button size="sm" variant="ghost" aria-label={`移除 ${member}`} onClick={() => onPatch({
+                members: members.filter((item) => item !== member),
+              })}>移除</Button>
+            </li>;
+          })}
+          {!members.length && <li className="is-empty">pool 里还没有 tool-agent</li>}
+        </ul>
+        <FormField label="添加 tool-agent">
+          <Select value="" onChange={(event) => {
+            const id = event.target.value;
+            if (!id || members.includes(id)) return;
+            onPatch({ members: [...members, id] });
+          }}>
+            <option value="">选择要加入的 tool-agent</option>
+            {toolChoices.map((tool) => <option key={tool.id} value={tool.id}>{tool.id}</option>)}
+          </Select>
+        </FormField>
+        {!toolChoices.length && <p className="field-hint">可用的 tool-agent 都已在 pool 中。</p>}
+      </div> : isRouter ? <>
         <div className="mas-property-section">
           <FormField label="路由策略">
             <Select value={routerStrategy} onChange={(event) => onPatch({ strategy: event.target.value as RouterStrategy })}>
-              <option value="llm_choice">LLM 选择</option>
+              <option value="from_plan">按计划拆分（from_plan）</option>
+              <option value="llm_choice">按计划拆分（llm_choice 别名）</option>
               <option value="score">候选评分</option>
               <option value="round_robin">轮询</option>
             </Select>
@@ -165,37 +202,8 @@ export const NodeInspector = memo(function NodeInspector({
             </Select>
           </FormField>}
         </div>
-        <fieldset className="mas-property-section">
-          <legend>候选 Agent</legend>
-          {agents.map((agent) => {
-            const aliases = agent.data.kind === 'blank' ? [agent.id, `blank:${agent.id}`] : [agent.id];
-            const checked = routerCandidates.some((candidate) => aliases.includes(candidate));
-            return <label key={agent.id} className="mas-checkbox-row">
-              <Checkbox checked={checked} onChange={() => onPatch({
-                candidates: checked
-                  ? routerCandidates.filter((candidate) => !aliases.includes(candidate))
-                  : [...routerCandidates, agent.id],
-              })} />
-              <span>{agent.id}<small className="field-hint"> · {agent.data.kind === 'blank' ? '自定义 Agent' : agent.data.kind || 'Agent'}</small></span>
-            </label>;
-          })}
-          {!agents.length && <p className="field-hint">先在画布中添加 Agent。</p>}
-        </fieldset>
-        <fieldset className="mas-property-section">
-          <legend>候选 Tool</legend>
-          {toolNodes.map((tool) => {
-            const checked = routerCandidates.includes(tool.id);
-            return <label key={tool.id} className="mas-checkbox-row">
-              <Checkbox checked={checked} onChange={() => onPatch({
-                candidates: checked ? routerCandidates.filter((candidate) => candidate !== tool.id) : [...routerCandidates, tool.id],
-              })} />
-              <span>{tool.id}<small className="field-hint"> · {tool.data.kind === 'tool' ? '智能工具' : '内置工具'}</small></span>
-            </label>;
-          })}
-          {!toolNodes.length && <p className="field-hint">画布中暂无 Tool。</p>}
-        </fieldset>
         <div className="mas-property-section">
-          <p className="field-hint">使用任务路由连线将上游 Agent 接入 Router；候选集合由这里维护，不创建普通下游边。</p>
+          <p className="field-hint">Router 的下游固定是 tool-agent pool。点击 pool 增加或删除成员。当前成员：{(routerCandidates.length ? routerCandidates.join('、') : '无')}。</p>
           <JsonObjectField label="Router meta" value={selected.data.meta || {}} onChange={(meta) => onPatch({ meta })} />
         </div>
       </> : <>
@@ -237,16 +245,16 @@ export const NodeInspector = memo(function NodeInspector({
             </label>;
           })}
           {!tools.length && <p className="field-hint">暂无可用工具。</p>}
-          {selected.id === 'hub' && <p className="field-hint">hub 未显式绑定工具时会使用工作流的全局工具。移除绑定不等于禁止调用。</p>}
+          {selected.data.kind === 'planner' && <p className="field-hint">Planner 不直接调用工具。把 tool-agent 放进 Router 下游的 pool。</p>}
         </fieldset>
         <div className="mas-property-section">
           <Button size="sm" disabled={selected.id === entryId} onClick={() => onEntry(selected.id)}>
             <Flag size={14} />{selected.id === entryId ? '当前运行入口' : '设为运行入口'}
           </Button>
         </div>
-        {selected.id === 'hub' && <details className="mas-property-section">
+        {selected.data.kind === 'planner' && <details className="mas-property-section">
           <summary>高级配置</summary>
-          <FormField label="验证技能" hint="启用后通过 Verifier 向 hub 反馈。">
+          <FormField label="验证技能" hint="启用后通过 Verifier 沿 feedback 回 Planner。">
             <Select value={selected.data.verify || ''} onChange={(e) => onPatch({ verify: e.target.value || null })}>
               <option value="">关闭</option>
               {(palette.skills || []).map((skill) => <option key={skill} value={skill}>{skill}</option>)}

@@ -74,7 +74,8 @@ def wikipedia_search(query: str, top_k: int = _TOP_K) -> str:
         except Exception:
             extract = ""
         body = extract or snippet
-        parts.append(f"{i}. {title}\n{body}")
+        page = f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'))}"
+        parts.append(f"{i}. {title}\n{page}\n{body}")
 
     text = "\n\n".join(parts)
     if len(text) > _MAX_CHARS:

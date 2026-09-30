@@ -18,7 +18,9 @@ from .llm_diagnostics import summarize_execution_error
 from .execution_recording import ExecutionRecorder
 from .memory import MemoryStore
 from .plugins import invoke_hub_skills, invoke_skill, REGISTRY
+from .protocol import AgentMessage, commit_to_fact, make_message, validate_json_schema, validate_payload
 from .rewards import has_answer_format
+from .router import select as router_select
 from .spec import MASSpec, load_spec
 
 logger = logging.getLogger(__name__)
@@ -101,21 +103,31 @@ def append_events_from_messages(archive: Archive, messages: List[Dict[str, Any]]
 
 
 def _select_mock_tool(spec: Optional[MASSpec]) -> str:
-    tools = list(spec.tools) if spec else ["execute_python"]
+    tools = list(spec.tools) if spec else ["python_coder"]
+    if "python_coder" in tools:
+        return "python_coder"
     if "execute_python" in tools:
         return "execute_python"
-    return tools[0] if tools else "execute_python"
+    return tools[0] if tools else "python_coder"
 
 
 def _node_memory_settings(spec: MASSpec, agent_id: str) -> tuple:
-    """agent-framework A4: resolve a node's memory_scope + profile.memory policy."""
+    """agent-framework A4: resolve a node's memory_scope + profile.memory policy.
+
+    ``memory_scope`` defaults to ``none`` (MAS-layer blackboard is always on;
+    agent-layer buffer is opt-in). When ``profile.memory`` is declared the
+    node opts into the per-agent buffer (scope ``agent``) regardless of the
+    declared scope, matching the centralized protocol (decision C).
+    """
     for a in getattr(spec, "agents", None) or []:
         if str(getattr(a, "id", "")) == agent_id:
-            scope = str(getattr(a, "memory_scope", None) or "shared")
+            scope = str(getattr(a, "memory_scope", None) or "none")
             policy = getattr(a, "profile", None) or {}
             mem = policy.get("memory") if isinstance(policy, dict) else None
+            if mem:
+                scope = "agent"
             return scope, dict(mem) if isinstance(mem, dict) else {}
-    return "shared", {}
+    return "none", {}
 
 
 def _open_construct(
@@ -123,7 +135,7 @@ def _open_construct(
     archive: Archive,
     spec: MASSpec,
     memory: MemoryStore,
-    agent_id: str = "hub",
+    agent_id: str = "planner",
 ) -> List[Dict[str, Any]]:
     archive.append(ExecutionEvent(kind=EventKind.TASK_START, payload={"task_id": task.get("id")}))
     # agent-framework A4: honour node memory_scope (agent | shared) and the
@@ -155,7 +167,7 @@ def _close_construct(
     memory: MemoryStore,
     raw: EpisodeRaw,
     task: Dict[str, Any],
-    agent_id: str = "hub",
+    agent_id: str = "planner",
 ) -> None:
     # agent-framework A4: write to the buffer the node's scope resolves to
     # (private per-agent buffer, or the shared hub buffer by default).
@@ -262,7 +274,7 @@ def run_mock_episode(
     *,
     spec: Optional[MASSpec] = None,
     memory: Optional[MemoryStore] = None,
-    agent_id: str = "hub",
+    agent_id: str = "planner",
 ) -> EpisodeRaw:
     spec = spec or load_spec()
     memory = memory or MemoryStore()
@@ -276,7 +288,7 @@ def run_mock_episode(
     if hop >= 1 and not task.get("_mock_error_persist"):
         force_error = None
     tool_name = _select_mock_tool(spec)
-    if tool_name == "execute_python":
+    if tool_name in ("execute_python", "python_coder"):
         args: Dict[str, Any] = {"code": "result = 1"}
         tool_out = "1"
         n_python, n_search = 1, 0
@@ -342,7 +354,7 @@ def run_episode(
     *,
     spec: Optional[MASSpec] = None,
     memory: Optional[MemoryStore] = None,
-    agent_id: str = "hub",
+    agent_id: str = "planner",
     tools_override: Optional[Sequence[str]] = None,
     system_prompt: Optional[str] = None,
     execution_recorder: Optional[ExecutionRecorder] = None,
@@ -397,21 +409,6 @@ def run_episode(
         agent.execution_recorder = execution_recorder
         if resume_msgs:
             execution_recorder.resume_applied(arpo.serialize_messages(resume_msgs))
-    # agent-framework A1: test mode (llm.kind=api) may use epc_aw LLM-in-tool
-    # backends for tool-agents declaring profile.llm_required; training/collect
-    # keeps the pure mas/tools functions.
-    invoker = getattr(agent, "tool_agent_invoker", None)
-    if invoker is not None:
-        try:
-            invoker.prefer_llm = bool(
-                getattr(getattr(spec, "llm", None), "kind", "") == "api"
-                and any(
-                    bool(getattr(a, "profile", {}).get("llm_required"))
-                    for a in getattr(spec, "agents", []) or []
-                )
-            )
-        except Exception:
-            invoker.prefer_llm = False
     sys_text = getattr(agent, "system_prompt", None) or tir.SYSTEM_PROMPT
     if resume_msgs:
         initial = {
@@ -546,7 +543,7 @@ class EpisodeRunner(Protocol):
         archive: Archive,
         spec: MASSpec,
         memory: MemoryStore,
-        agent_id: str = "hub",
+        agent_id: str = "planner",
     ) -> EpisodeRaw:
         ...
 
@@ -559,7 +556,7 @@ class MockRunner:
         archive: Archive,
         spec: MASSpec,
         memory: MemoryStore,
-        agent_id: str = "hub",
+        agent_id: str = "planner",
     ) -> EpisodeRaw:
         del llm
         return run_mock_episode(task, archive, spec=spec, memory=memory, agent_id=agent_id)
@@ -576,7 +573,7 @@ class TirRunner:
         archive: Archive,
         spec: MASSpec,
         memory: MemoryStore,
-        agent_id: str = "hub",
+        agent_id: str = "planner",
     ) -> EpisodeRaw:
         if llm is None or not llm.endpoint:
             raise RuntimeError("Set LLMConfig.endpoint or pass mock=True")
@@ -602,7 +599,7 @@ def apply_verifier_feedback(
     memory: MemoryStore,
     runner: EpisodeRunner,
 ) -> EpisodeRaw:
-    """If hub.verify is set, run that skill after the episode. route=hub reruns at most max_feedback_hops."""
+    """If hub.verify is set, run that skill after the episode. Fail routes to planner and reruns at most max_feedback_hops."""
     name = str(getattr(spec.hub, "verify", None) or "").strip()
     if not name:
         return raw
@@ -620,7 +617,7 @@ def apply_verifier_feedback(
         row = invoke_skill(name, ctx)
         raw.skill_results = list(raw.skill_results) + [row]
         route = row.get("route")
-        will_rerun = route == "hub" and hops < max_hops
+        will_rerun = route in ("hub", "planner") and hops < max_hops
         archive.append(
             ExecutionEvent(
                 kind=EventKind.FEEDBACK,
@@ -652,9 +649,23 @@ def run_compiled_episode(
     memory: MemoryStore,
     runner: EpisodeRunner,
     agent_llms: Optional[Mapping[str, LLMConfig]] = None,
+    window_llm: Optional["WindowLLM"] = None,
 ) -> EpisodeRaw:
-    """Walk compiled route/message/feedback; each non-verifier hop is a Tir/mock episode."""
+    """Walk the compiled graph.
+
+    Centralized topology (planner-led) delegates to the AgentMessage flow in
+    ``centralized_runtime.run_centralized_episode``. Other topologies use the
+    legacy per-hop TirAgent walk below.
+    """
     compiled = compile_spec(spec)
+    topo = str(spec.topology or "")
+    if topo in ("centralized", "hub_react", "single", "") and compiled.routers:
+        from .centralized_runtime import run_centralized_episode  # lazy to avoid cycle
+
+        return run_centralized_episode(
+            task, llm, archive, spec, memory, compiled,
+            agent_llms=agent_llms, window_llm=window_llm,
+        )
     current = compiled.entry_agent
     hops = 0
     max_hops = max(4, int(spec.hub.max_feedback_hops or 1) * 3 + max(1, len(compiled.agents)))
@@ -716,7 +727,7 @@ def run_compiled_episode(
             break
 
         tools = list(compiled.tools_for.get(current) or [])
-        if not tools and current in {"hub", "orchestrator"}:
+        if not tools and current in {"planner", "hub", "orchestrator"}:
             tools = list(spec.tools)
         prompt = (node.system_prompt or "").strip() or (spec.hub.system_prompt or None)
         sub_spec = spec.model_copy(deep=True)
@@ -788,7 +799,17 @@ class ExecutionService:
             bp = resume_raw if isinstance(resume_raw, BranchPoint) else BranchPoint.model_validate(resume_raw)
             task_run.update(branch_point_to_resume_task_fields(bp))
         compiled = compile_spec(self.spec)
-        if compiled.ok and compiled.multi_agent:
+        topo = str(self.spec.topology or "")
+        if not self.mock and (self.llm is None or not getattr(self.llm, "endpoint", None)):
+            raise RuntimeError("Set LLMConfig.endpoint or pass mock=True")
+        use_centralized = (
+            (not self.mock)
+            and compiled.ok
+            and topo in ("centralized", "hub_react", "single", "")
+            and bool(compiled.routers)
+        )
+        use_graph = compiled.ok and compiled.multi_agent and not use_centralized
+        if use_centralized or use_graph:
             raw = run_compiled_episode(
                 task_run, self.llm, arch, self.spec, self.memory, self.runner,
                 self.agent_llms,

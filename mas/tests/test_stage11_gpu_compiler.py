@@ -67,9 +67,9 @@ class TestCompiledCollect(unittest.TestCase):
         spec = MASSpec(
             topology="graph",
             entry_agent="planner",
-            hub=HubSpec(skills=["react_loop"]),
+            hub=HubSpec(skills=[]),
             agents=[
-                AgentNodeSpec(id="planner", role="planner", skills=["react_loop"], trainable=True),
+                AgentNodeSpec(id="planner", role="planner", skills=[], trainable=True),
                 AgentNodeSpec(id="executor", role="executor", tools=["execute_python"], trainable=True),
             ],
             edges=[
@@ -115,8 +115,8 @@ class TestGpuApi(unittest.TestCase):
 
         pal = mas_palette()
         ids = {t["id"] for t in pal["templates"]}
-        self.assertIn("hub_react", ids)
-        self.assertIn("pev_draft", ids)
+        self.assertIn("centralized", ids)
+        self.assertNotIn("hub_react", ids)
         for t in pal["templates"]:
             spec = MASSpec.model_validate(t["workflow"])
             ok, reason = spec.is_executable()

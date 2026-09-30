@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
+
+os.environ.setdefault("SCIENCE_INFRA_TOOL_KERNEL", "1")
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
@@ -20,11 +23,12 @@ class TestSchema03Sugar(unittest.TestCase):
         for yaml_path in ("experiments/arpo_e2e/workflow.yaml", "experiments/demo/workflow.yaml"):
             spec = load_spec(yaml_path)
             kinds = {a.id: a.kind for a in spec.agents}
-            self.assertEqual(kinds.get("hub"), "hub", yaml_path)
+            # centralized redesign: planner is the orchestrator (hub removed)
+            self.assertEqual(kinds.get("planner"), "planner", yaml_path)
             for t in spec.tools:
                 self.assertEqual(kinds.get(t), "tool", f"{yaml_path}:{t}")
-            # router field exists, defaults empty
-            self.assertEqual(spec.routers, [])
+            # router field exists, centralized YAML declares one
+            self.assertTrue(len(spec.routers) >= 1, yaml_path)
 
     def test_compile_old_yaml_ok(self):
         from workflow.compiler import compile_spec, tool_agent_ids, trainable_agents
@@ -34,7 +38,11 @@ class TestSchema03Sugar(unittest.TestCase):
         c = compile_spec(spec)
         self.assertTrue(c.ok, c.reason)
         self.assertEqual(sorted(tool_agent_ids(spec)), sorted(spec.tools))
-        self.assertEqual(trainable_agents(spec), ["hub"])
+        names = trainable_agents(spec)
+        self.assertIn("planner", names)
+        for t in spec.tools:
+            self.assertNotIn(t, names)
+            self.assertFalse(next(a for a in spec.agents if a.id == t).trainable)
         self.assertFalse(c.multi_agent)
 
     def test_router_candidates_validation(self):
@@ -79,12 +87,19 @@ class TestToolAgentInvoker(unittest.TestCase):
         from tir_agent import ToolAgentInvoker
 
         invoker = ToolAgentInvoker({})
+        # legacy id execute_python aliases to python_coder
         self.assertIn("execute_python", invoker.known_ids)
-        out = invoker.invoke("execute_python", {"code": "print(21*2)"})
+        ta = TOOL_AGENTS["python_coder"]
+        saved = ta._llm_invoke
+        ta._llm_invoke = None
+        try:
+            out = invoker.invoke("execute_python", {"code": "print(21*2)"})
+        finally:
+            ta._llm_invoke = saved
         self.assertIn("42", str(out))
 
         # fallback to legacy map for unregistered tool id
-        legacy_invoker = ToolAgentInvoker({"execute_python": TOOL_AGENTS["execute_python"]})
+        legacy_invoker = ToolAgentInvoker({"execute_python": TOOL_AGENTS["python_coder"]})
         self.assertIn("no output", str(legacy_invoker.invoke("execute_python", {"code": "1"})))
 
     def test_unknown_tool_returns_none(self):

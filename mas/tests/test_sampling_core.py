@@ -101,7 +101,7 @@ def test_registry_separates_independent_and_branch_strategies():
     assert sampling_adapters.resolve("arpo").id == "arpo"
 
 
-def test_adapter_rejects_window_kind_outside_its_capability():
+def test_adapter_plans_agent_complete_window():
     core = SamplingCore(ConfiguredGateAdapter())
     site = BranchSite(
         id="agent_end",
@@ -117,7 +117,9 @@ def test_adapter_rejects_window_kind_outside_its_capability():
         ),
         resume_messages=[{"role": "assistant", "content": "done"}],
     )
-    assert plan(core, site, [window]) == []
+    planned = plan(core, site, [window])
+    assert len(planned) == 1
+    assert planned[0].plan.site_id == "agent_end"
 
 
 def test_entropy_gate_does_not_fabricate_missing_metrics():
@@ -144,7 +146,7 @@ def test_dual_entropy_requires_probe_entropy():
     assert plan(core, site, [window]) == []
 
 
-def test_preview_separates_legacy_sites_and_blank_canvas_identity():
+def test_preview_binds_agent_windows_to_outgoing_edges():
     preview = sampling_preview({
         "schema_version": "0.3",
         "topology": "graph",
@@ -160,19 +162,20 @@ def test_preview_separates_legacy_sites_and_blank_canvas_identity():
             "candidates": ["expert"],
             "strategy": "llm_choice",
         }],
-        "edges": [{"from": "planner", "to": "route_main", "kind": "message"}],
+        "edges": [{"from": "planner", "to": "route_main", "kind": "route"}],
         "sampling": {
             "mode": "arpo",
             "sites": [{
-                "id": "legacy_planner",
+                "id": "after_planner",
                 "anchor": {"kind": "after_agent_turn", "agent_id": "planner"},
                 "gate": {"type": "always"},
             }],
         },
     })
-    blank = next(
-        item for item in preview["opportunities"]
-        if item["selector"]["interaction"].get("tool_id") == "blank:expert"
-    )
-    assert blank["node_id"] == "expert"
-    assert [item["site_id"] for item in preview["legacy_sites"]] == ["legacy_planner"]
+    by_owner = {item["node_id"]: item for item in preview["opportunities"]}
+    assert set(by_owner) == {"planner", "expert", "route_main"}
+    assert by_owner["planner"]["edge_target"] == "route_main"
+    assert by_owner["planner"]["anchor"]["kind"] == "after_agent_turn"
+    assert by_owner["expert"]["anchor"]["kind"] == "after_agent_turn"
+    assert by_owner["planner"]["site_id"] == "after_planner"
+    assert preview["legacy_sites"] == []

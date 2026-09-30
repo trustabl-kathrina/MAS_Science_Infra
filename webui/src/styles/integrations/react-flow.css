@@ -71,6 +71,15 @@
 .mas-connection-options { padding: 12px 14px 14px; overflow: auto; min-height: 0; }
 .mas-workbench .mas-node { width: 220px; padding: 16px 16px 12px; border: 1px solid #c8cfd8; border-radius: 10px; color: var(--text-primary); background: var(--surface); font-size: 13px; box-shadow: 0 2px 5px #20252b06; }
 .mas-workbench .mas-node--tool { width: 208px; border-style: dashed; padding-bottom: 16px; }
+.mas-workbench .mas-node--pool { width: 220px; border-color: #7d9a78; }
+.mas-workbench .mas-node--pool .mas-node__icon { background: #eef5ec; color: #3f6b45; }
+.mas-pool-members { display: flex; flex-wrap: wrap; gap: 4px; margin: 12px 0 0; padding: 0; list-style: none; }
+.mas-pool-members li { max-width: 100%; padding: 2px 6px; border-radius: 999px; background: #eef5ec; color: #3f6b45; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mas-pool-members li.is-empty { background: transparent; color: var(--text-secondary); }
+.mas-pool-editor { display: grid; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
+.mas-pool-editor li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mas-pool-editor .mas-pool-tier { width: 88px; flex: 0 0 auto; }
+.mas-pool-editor li.is-empty { color: var(--text-secondary); font-size: 12px; }
 .mas-workbench .mas-node--router { width: 208px; border-color: #8c7bb6; }
 .mas-workbench .mas-node--router .mas-node__icon { background: #f1edfa; color: #715b9e; }
 .mas-workbench .mas-node--tool-agent { border-style: dashed; }

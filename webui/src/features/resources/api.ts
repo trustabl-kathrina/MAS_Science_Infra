@@ -61,6 +61,7 @@ export interface DatasetResource {
   id: string;
   name: string;
   path: string;
+  exists?: boolean;
 }
 export interface DatasetCatalog {
   revision: number;

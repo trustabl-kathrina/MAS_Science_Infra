@@ -32,6 +32,7 @@ from science_infra.control.model_resource_api import router as model_resource_ro
 from science_infra.control.dataset_resources import router as dataset_resource_router
 from science_infra.control.training_logs import router as training_logs_router, training_run
 from science_infra.control.rollout_trees import router as rollout_trees_router
+from science_infra.control.rollout_runs import router as rollout_runs_router
 from science_infra.control.model_resources import ResourceError
 from science_infra.control.readiness import model_readiness
 from science_infra.control.training import training_preflight
@@ -92,6 +93,13 @@ class LlmHealthBody(BaseModel):
     kind: Optional[str] = None
 
 
+class LlmOptionsBody(BaseModel):
+    kind: str = "local"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    port: Optional[int] = None
+
+
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -106,6 +114,7 @@ def create_app() -> FastAPI:
     app.include_router(dataset_resource_router)
     app.include_router(training_logs_router)
     app.include_router(rollout_trees_router)
+    app.include_router(rollout_runs_router)
 
     @app.exception_handler(ResourceError)
     async def resource_error(_request: Request, error: ResourceError) -> Response:
@@ -325,6 +334,19 @@ def create_app() -> FastAPI:
             kind=body.kind,
         )
 
+    @app.post("/api/llm/options")
+    async def llm_options(body: LlmOptionsBody, experiment_id: str = Query("demo")) -> Dict[str, Any]:
+        try:
+            return await services.list_llm_options(
+                experiment_id,
+                kind=body.kind,
+                base_url=body.base_url,
+                api_key=body.api_key,
+                port=body.port,
+            )
+        except Exception as e:
+            raise HTTPException(400, str(e)) from e
+
     @app.get("/api/mas/readiness")
     def mas_readiness(experiment_id: str = Query("demo")) -> Dict[str, Any]:
         return model_readiness(experiment_id)
@@ -410,8 +432,12 @@ def create_app() -> FastAPI:
         experiment_id: Optional[str] = None,
         offset: int = Query(0, ge=0),
         limit: int = Query(50, ge=1, le=100),
+        kinds: str = Query("train"),
     ) -> Dict[str, Any]:
-        rows = [row for row in PROCS.list_runs(experiment_id) if row.get("kind") == "train"]
+        allowed = {part.strip() for part in kinds.split(",") if part.strip()}
+        if not allowed or not allowed <= {"train", "eval"}:
+            raise HTTPException(400, "不支持的运行类型")
+        rows = [row for row in PROCS.list_runs(experiment_id) if row.get("kind") in allowed]
         return {"runs": rows[offset:offset + limit], "total": len(rows)}
 
     @app.get("/api/rl/activity")

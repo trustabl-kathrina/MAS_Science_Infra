@@ -341,7 +341,7 @@ def debug_tir_agent() -> None:
     if not endpoint:
         raise RuntimeError("Set OPENAI_API_BASE (or OPENAI_BASE_URL) to an OpenAI-compatible endpoint.")
 
-    model = os.environ.get("OPENAI_MODEL", os.environ.get("MODEL", "/root/autodl-tmp/LLM/Qwen3-4B"))
+    model = os.environ.get("OPENAI_MODEL", os.environ.get("MODEL", "Qwen3-4B"))
     print(f"debug_tir_agent endpoint={endpoint} model={model} n={len(records)}")
     trainer = agl.Trainer(
         n_runners=1,

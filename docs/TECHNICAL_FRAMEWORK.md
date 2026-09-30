@@ -3,7 +3,7 @@
 
 | 项        | 内容                                                                                                                                                                                                                                                                                                              |
 | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 版本       | 2026-09-29（运行时：`EventBus.publish` 跨线程 `call_soon_threadsafe`；`/api/events` 约 0.5s 周期排水；Daemon `_expansion_enqueue_failures`；模型调用失败进入 episode 错误；`DiagnoserRegistry.consume` 扇出；Monitor / RL 日志绑定 `useRunLog`；采样结果在 Runs；Collect 走编译图、训练热路径仍是单 hub，已知分叉）。上一版 2026-09-20（ARPO pre-inject + `tree_*.json` + W1/W2 + Monitor 离线曲线 + 5 样本端到端） |
+| 版本       | 2026-09-30（中心化图：planner → router → tool-agent pool → verifier；tool-agent `profile.tier` 为 lite / pro；采样点在非 tool agent 与 router 结束之后；顶栏「测试」读目录数据集并写控制台。训练热路径仍是单 hub TirAgent）。上一版 2026-09-29（运行时排水、Daemon 入队失败、Monitor `useRunLog`、采样结果在 Runs） |
 | 对照提案     | [GPT_analysis.md](./GPT_analysis.md)（架构提案 v1.0）；v2 构思 [new_framework.md](./new_framework.md) → 整理与最优架构 [NEW_FRAMEWORK_DESIGN.md](./NEW_FRAMEWORK_DESIGN.md) → 落地计划 [NEW_FRAMEWORK_MIGRATION_PLAN.md](./NEW_FRAMEWORK_MIGRATION_PLAN.md) → agent 化验收 [MAS_AGENT_FRAMEWORK_TEST.md](./MAS_AGENT_FRAMEWORK_TEST.md)                                                                   |
 | 产品原则     | [design.md](../design.md)                                                                                                                                                                                                                                                                                       |
 | 层边界      | [LAYER_LAYOUT.md](./LAYER_LAYOUT.md)                                                                                                                                                                                                                                                                            |
@@ -23,18 +23,18 @@
 
 ## 0. 一句话结论
 
-当前仓库是 **Phase 0 MVP + Control UI v1.5 + RL 层抽离（`rl/`）+ BranchSite 声明 + ActiveSet ForkPlanner + RAE reward/advantage + 新框架 P0–P3（RolloutTree / schema 0.3 / WindowEndEvent / 实时 Harness）+ MAS agent 化重构（AgentRegistry 双模式 tool-agent / RouterSpec 运行时 / 两层 memory / per-agent window_events）**。
+当前仓库是 **Phase 0 MVP + Control UI v1.5 + RL 层抽离（`rl/`）+ BranchSite 声明 + ActiveSet ForkPlanner + RAE reward/advantage + 新框架 P0–P3（RolloutTree / schema 0.3 / WindowEndEvent / 实时 Harness）+ MAS agent 化重构（tool-agent lite / pro、RouterSpec 运行时、两层 memory、per-agent window_events）**。
 
 
 | 面            | 状态                                                                                                                                              |
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | MAS 构建 / 数据面 | `MASSpec`（schema 0.3：kind/profile/routers）→ `ExecutionService`（TirAgent / mock / Compiler walk）→ Event / Trajectory / Archive；可独立于 RL             |
-| Agent 模型      | **一切皆 Agent**：`AgentRegistry`（planner/tool/verifier/blank）+ `RouterSpec`（适配器模式，决策映射为 tool_calls）；tool-agent 双模式（pure / epc_aw llm）       |
-| 采样 / 分支      | `SamplePolicy.sites`（`BranchSite`）→ `ActiveSetSession.plan_forks_from_raw`（支持 `window_events` 事件匹配）→ `.local_expansion` → Daemon enqueue；Daemon `_preinject_expand_fields` 在波-1 enqueue 前注入 expand 列（修复 `branch_local=0`，2026-09-20 实测 branch_local=6）；Collect **不做**树 |
+| Agent 模型      | **画布上的 Agent** 是 planner / verifier / blank。tool-agent 收进 router 下游的 pool，不可训练。`profile.tier` 缺省 `lite`（HTTP kernel），`pro` 做选页和落地页摘录。lite 不再 import 会 `sys.exit` 的 HIVE 工具类。`workflow.hub` 仍在，但 hub / executor 不是 Agent 节点 |
+| 采样 / 分支      | 可选窗口在每个非 tool agent 结束之后，以及每个 router 结束之后。verifier 锚点 `after_verifier`，planner、blank、router 用 `after_agent_turn`。不按 tool 展开。`SamplePolicy.sites` → `ActiveSetSession.plan_forks_from_raw` → Daemon enqueue。Collect **不做**树 |
 | RolloutTree    | `RolloutTree` / `RolloutTreeNode` 一等合同；`tree_from_plans` 建树；Daemon `_persist_rollout_tree` 训练期落盘真实 rollout id 树（`mas/.local_expansion/tree_*.json`，平铺格式）；`GET /api/mas/rollout-trees`（daemon 树优先 + tree_id 去重 + 过滤退化树）+ React Flow 可视化 + SSE 实时    |
 | RL 面         | 权威 outcome 在 `rl/rewards`；LossSpec / TrainSignal / overlay / ARPO·AEPO·RAE Daemon 在 `rl/`；token advantage 在 VERL hook；`CreditAssignmentSpec`（k-hop/verdict） |
 | Harness       | 四插件 + `DiagnoserRegistry.consume` 扇出（无 `consume` 的插件跳过；cognitive / reward_hacking / stub 为 no-op `consume`）+ `RewardHackingMonitor`；stdout JSONL 帧 → SSE `rollout_tree` |
-| Control / UI | Science Studio：首页「实验」+「模型与数据」；工作区顶栏为返回 / 实验名 / GPU / 保存实验 / 开始训练或查看训练；菜单 Experiment · LLM · MAS · RL · Harness · Monitor · Runs。采样树在 Runs → 采样结果（`#/experiments/:id/runs/:runId/samples`），不是顶栏页。Monitor 实验级曲线与当前 run 的 `useRunLog` stdout 分开 |
+| Control / UI | Science Studio：首页「实验」+「模型与数据」；工作区顶栏为返回 / 实验名 / GPU / 保存实验 / 测试 / 开始训练或查看训练；菜单 Experiment · LLM · MAS · RL · Harness · Monitor · Runs。采样树在 Runs → 采样结果（`#/experiments/:id/runs/:runId/samples`），不是顶栏页。Monitor 实验级曲线与当前 run 的 `useRunLog` stdout 分开 |
 | 研究原语缺口       | 独立 `Episode`、`Diagnostic`/`Intervention`、Experiment 生命周期状态机仍未冻结                                                                               |
 
 
@@ -62,7 +62,19 @@
 | Monitor 与 RL 的训练日志绑定 `useRunLog(experimentId, runId)`。切换 run 先清空缓冲再订阅新的 SSE | `webui/src/features/training/model/useRunLog.ts`；`WorkspacePanels.tsx` 的 Monitor；`RLPanel.tsx` |
 | 采样结果页在 Runs 下，路由 `#/experiments/:id/runs/:runId/samples` | `webui/src/app/navigation.ts`，`webui/src/features/rollout-tree/SampleResults.tsx` |
 
-**已知分叉，不是已修复项**：Collect 在 `compiled.multi_agent` 时走 `run_compiled_episode`（`mas/workflow/runtime.py` `ExecutionService.run`）。`LitTirAgent.rollout` 仍只调用 `run_episode`（`mas/lit_tir_agent.py`），训练热路径是单 hub TirAgent 加上声明式分支采样。画布上的多专家拓扑会在采集里执行，不会在这次训练里被原样重放。
+**已知分叉，不是已修复项**：Collect 在中心化拓扑上走 `run_centralized_episode`（`mas/workflow/centralized_runtime.py`）。`LitTirAgent.rollout` 仍只调用 `run_episode`（`mas/lit_tir_agent.py`），训练热路径是单 hub TirAgent 加上声明式分支采样。画布上的 pool 会在采集里执行，不会在这次训练里被原样重放。
+
+### 0.2 2026-09-30 已落地的图与工具
+
+| 事实 | 落点 |
+|------|------|
+| 中心化一轮是 planner → 每个 router → pool 里选中的 tool-agent → verifier。pool 只在画布上分组，保存后回到 `router.candidates` 和 router → 下一跳的 message | `mas/workflow/centralized_runtime.py`；`webui/src/features/mas/model/workflowGraph.ts` |
+| tool-agent `profile.tier`：`lite` 走 `mas/tools/wikipedia.py` 与 `mas/tools/search.py`；`pro` 走 `mas/tools/pro_tools.py`（选页、前 2 个落地页摘录）。失败时文本含 `pro_fallback`。`SCIENCE_INFRA_TOOL_KERNEL=1` 强制 lite | `mas/tools/tool_agents.py` `effective_tier` |
+| `google_search` 的检索页是 Bing / DuckDuckGo HTML，不是 Google 网页 | `mas/tools/search.py` `search_organic` |
+| 分叉策略的设计期机会来自非 tool agent 和 router，不再按 `compiled.tools_for` 展开 | `mas/workflow/sampling/adapters/agent_router.py`；`mas/workflow/site_policy.py` |
+| `POST /api/mas/eval-runs` 用目录里的数据集做推理。stdout 与训练共用控制台，一行一个 `src -> dst` | `science_infra/control/rollout_runs.py` |
+
+2026-09-20 的 ARPO 记录（run `384d1927458a`，`after_tool`×2 + `after_agent_turn`×4）是当时的树，不按上面的采样点重算。
 
 ---
 
@@ -362,78 +374,66 @@ Caveat：`plan_forks_from_raw` 对每个 site 用 `site.anchor.kind` **自匹配
 
 静态 Framework，不是 Runtime。类名 `MASSpec`（提案称 `WorkflowSpec`）。
 
-```73:100:mas/workflow/spec.py
+```104:120:mas/workflow/spec.py
 class MASSpec(BaseModel):
-    schema_version: str = "0.1.0"
-    topology: str = "hub_react"
+    schema_version: str = "0.3"
+    topology: str = "centralized"
     hub: HubSpec = Field(default_factory=HubSpec)
     tools: List[str] = Field(
-        default_factory=lambda: ["web_search", "wikipedia_search", "execute_python"]
+        default_factory=lambda: ["wikipedia_search", "google_search", "web_search", "python_coder", "think"]
     )
     llm: LLMBinding = Field(default_factory=LLMBinding)
     memory: MemorySpec = Field(default_factory=MemorySpec)
     archive: ArchiveSpec = Field(default_factory=ArchiveSpec)
     agents: List[AgentNodeSpec] = Field(default_factory=list)
     edges: List[EdgeSpec] = Field(default_factory=list)
-    entry_agent: str = "hub"
+    routers: List[RouterSpec] = Field(default_factory=list)
+    entry_agent: str = "planner"
     sampling: SamplePolicy = Field(default_factory=SamplePolicy)
-
-    def is_executable(self) -> tuple[bool, str]:
-        ...
 ```
 
-默认文件：`mas/specs/hub_react.yaml`；Control 路径：`experiments/<id>/workflow.yaml`。
+默认模板在 `mas/specs/templates/`；Control 路径：`experiments/<id>/workflow.yaml`。`hub` 键保留 verify 与反馈轮数，不是画布上的 Agent。
 
-示例（schema 0.3 agent 化，含采样与路由器）：
+示例（schema 0.3，中心化。pool 不写入 YAML）：
 
 ```yaml
-# experiments/<id>/workflow.yaml
-schema_version: 0.3
-topology: graph
+schema_version: "0.3"
+topology: centralized
 entry_agent: planner
-hub:
-  role: orchestrator
-  skills: [react_loop]
-tools: [web_search, wikipedia_search, execute_python]   # sugar → kind=tool 节点
-llm: { kind: api, model: "...", base_url: "..." }
-memory: { agent: messages, system: none }
-archive: { window: post_first_tool }
+hub: {}
+tools: [wikipedia_search, google_search, web_search, python_coder, think]
 agents:
-  - { id: planner, kind: planner, tools: [], trainable: true }
-  - { id: execute_python, kind: tool, trainable: false }     # 可选 profile.llm_required: true
-  - id: expert_phys
-    kind: blank                                             # 空白 agent = 自定义专家
-    system_prompt: "You are a physics expert."
-    profile: { skills: [physics], memory: { policy: append_latest, max_items: 2 } }
-routers:                                                    # AgentRouter（适配器模式）
-  - { id: route_main, candidates: [execute_python, wikipedia_search, expert_phys], strategy: llm_choice }
+  - { id: planner, kind: planner, trainable: true }
+  - { id: wikipedia_search, kind: tool, trainable: false, profile: { tier: lite } }
+  - { id: verifier, kind: verifier, trainable: true }
+routers:
+  - id: route_exec
+    candidates: [wikipedia_search, google_search, web_search, python_coder, think]
+    strategy: from_plan
 edges:
-  - { from: planner, to: route_main, kind: message }        # router 相邻边为路由糖
+  - { from: planner, to: route_exec, kind: route }
+  - { from: route_exec, to: verifier, kind: message }
+  - { from: verifier, to: planner, kind: feedback }
 sampling:
-  mode: arpo           # UI 可选 grpo_n | arpo | aepo | appo | rae
+  mode: arpo
   group_n: 4
   beam_size: 2
-  expand_in_runner: true
-  sites: []           # 空则 resolved_sites() 从 barriers 派生 after_tool
+  sites: []    # 打开后才写入；锚点是 after_agent_turn 或 after_verifier
 ```
 
 
 | 字段                  | 现状                                                                                               |
 | ------------------- | ------------------------------------------------------------------------------------------------ |
-| `topology`          | `hub_react` / `single` 可执行；`graph` 经 `compile_spec` 校验后可执行                                       |
-| `hub.skills`        | 每次 `run` 真正 `Skill.run`                                                                          |
-| `hub.verify`        | 可选事后 verifier；失败 `route=hub` 再跑                                                                  |
-| `hub.system_prompt` | 写入 TirAgent SystemMessage                                                                        |
-| `tools`             | mock 事件 + `TirAgent.from_spec`；schema 0.3 sugar 展开为隐式 `kind=tool` 节点                                |
-| `llm.kind`          | Schema：`api` / `local` / `rl_endpoint`；`api` + `profile.llm_required` → tool-agent epc_aw llm 后端（测试态） |
-| `agents[].kind`     | `hub` / `planner` / `tool` / `verifier` / `blank`（`AgentNodeSpec`，默认 blank）                        |
-| `agents[].profile`  | blank agent 自定义：`skills` / `memory{policy,max_items}` / `llm_required`                              |
-| `agents[].memory_scope` | `"agent"`（私有 buffer，**spec 默认**）/ `"shared"`（共享 hub buffer）                                        |
-| `routers`           | `RouterSpec{id, candidates, strategy, scorer}`；编译期校验候选存在；候选 kind=tool 进 `tools_for[上游]`（适配器糖） |
-| `agents` / `edges`  | 可保存且可执行（`tool_call`/`route`/`message`/`feedback`）；非法边 Collect 400；router 相邻边跳过常规校验            |
-| `sampling`          | `SamplePolicy`：Collect 用 `group_n`；Train 经 `apply_sample_policy`（含 `sites` / `expand_in_runner`） |
-| Topology Compiler   | `workflow/compiler.py` → 同步交接 walk；每 hop 仍跑 TirAgent/mock                                        |
-| schema 归一化         | `load_spec` → `_normalize_schema03`：top-level tools 展开 + legacy kind 推断（**旧 YAML 磁盘零改动**）         |
+| `topology`          | `centralized` / `hub_react` / `single` 走中心化运行时；`graph` 经 `compile_spec` 校验后可执行                    |
+| `hub`               | 不是 Agent。保留 verify、反馈轮数等编排字段                                                                     |
+| `tools`             | 顶层名字展开成 `kind: tool` 且 `trainable: false`                                                       |
+| `agents[].kind`     | `planner` / `tool` / `verifier` / `blank`。没有 hub、executor 节点                                      |
+| `agents[].profile.tier` | tool-agent 的 `lite` 或 `pro`，缺省 lite                                                            |
+| `agents[].trainable` | `kind: tool` 强制 false                                                                            |
+| `routers`           | 每个 router 的下游在画布上是一个 pool，成员等于 `candidates`                                                   |
+| `edges`             | 保存后的中心化边是 route、message、feedback。pool 边在保存时折叠                                           |
+| `sampling.sites`    | 机会来自非 tool agent 与 router。verifier 用 `after_verifier`，其余用 `after_agent_turn`                  |
+| schema 归一化         | `load_spec` → `_normalize_schema03`：旧 YAML 里的 hub/executor 身份折进 planner 或第一个 router             |
 
 
 边种类（`EdgeSpec.kind`）：`message` | `tool_call` | `feedback` | `route` | `sample_barrier`（router 相邻边为路由糖，编译时跳过 agent-agent 校验）。

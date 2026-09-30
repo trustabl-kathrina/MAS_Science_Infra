@@ -37,4 +37,23 @@ export const masApi = {
   sampleData: (body: { parquet?: string; data_n?: number; source?: string }, signal?: AbortSignal) =>
     request<SampleDataResponse>(
       '/api/mas/sample-data', { method: 'POST', body: JSON.stringify(body), signal }),
+  evalSources: (id: string, signal?: AbortSignal) =>
+    request<EvalSources>(`/api/mas/eval-sources?${experimentQuery(id)}`, { signal }),
+  evalRun: (id: string, body: { path: string; limit: number }) =>
+    request<EvalRunStart>(`/api/mas/eval-runs?${experimentQuery(id)}`, { method: 'POST', body: JSON.stringify(body) }),
 };
+
+export interface EvalSources {
+  val_files: string;
+  val_exists: boolean;
+  test_files: string;
+  test_exists: boolean;
+}
+
+export interface EvalRunStart {
+  run_id: string;
+  state: string;
+  split?: 'val' | 'test';
+  parquet: string;
+  limit: number;
+}

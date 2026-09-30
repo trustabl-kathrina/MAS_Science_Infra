@@ -48,6 +48,7 @@ export function useTrainConfirmation(onConfigure?: (section: SettingsSection) =>
             <div><dt>采样</dt><dd>group_n={review.effective.group_n} · Branch Sites={review.effective.branch_site_count}</dd></div>
             <div><dt>训练数据</dt><dd>{String(review.effective.data?.train_files || '未配置')}</dd></div>
             <div><dt>验证数据</dt><dd>{String(review.effective.data?.val_files || '未配置')}</dd></div>
+            <div><dt>测试数据</dt><dd>{String(review.effective.data?.test_files || '未配置')}</dd></div>
           </dl>
           <div className="training-preflight-checks">
             {review.checks.map(check => <div className={`training-preflight-check is-${check.status}`} key={check.id}>

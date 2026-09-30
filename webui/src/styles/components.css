@@ -90,6 +90,13 @@
   .ui-tooltip-arrow { fill: var(--text-primary); }
   .dialog-overlay { position: fixed; inset: 0; z-index: 70; background: #20252b55; }
   .dialog-content { position: fixed; z-index: 71; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; background: var(--surface); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 28px; box-shadow: 0 12px 40px #20252b26; }
+  .eval-dialog { width: min(640px, calc(100vw - 32px)); }
+  .eval-split, .eval-limit { display: grid; gap: 8px; margin: 12px 0; font-size: 13px; }
+  .eval-split label { display: flex; gap: 8px; align-items: flex-start; }
+  .eval-results ul { display: grid; gap: 6px; margin: 8px 0; padding: 0; list-style: none; max-height: 240px; overflow: auto; }
+  .eval-results button { display: grid; gap: 2px; width: 100%; text-align: left; background: transparent; border: 0; padding: 4px 0; cursor: pointer; }
+  .eval-results span { color: var(--text-secondary); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .eval-detail { margin-top: 8px; font-size: 13px; }
   .dialog-title { font-size: 19px; font-weight: 600; margin: 4px 0 12px; }
   .dialog-description { font-size: 14px; color: var(--text-secondary); line-height: 1.8; }
   .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }

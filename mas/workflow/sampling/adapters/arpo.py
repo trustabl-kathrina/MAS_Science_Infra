@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable
 
 from workflow.contracts import BranchSite
 from workflow.sampling.adapters.configured import ConfiguredGateAdapter
-from workflow.sampling.adapters.tool_result import tool_result_opportunities
+from workflow.sampling.adapters.agent_router import agent_router_opportunities
 from workflow.sampling.contracts import (
     SamplingDecision,
     SamplingOpportunity,
@@ -21,10 +21,10 @@ class ArpoSamplingAdapter(ConfiguredGateAdapter):
     allowed_gates = ("entropy_delta", "arpo", "always")
 
     def opportunities(self, workflow: Any) -> Iterable[SamplingOpportunity]:
-        return tool_result_opportunities(
+        return agent_router_opportunities(
             workflow,
             allowed_gates=self.allowed_gates,
-            message="Tool Result 后保留完整消息前缀，重新采样上游 Agent 的后续决策。",
+            message="Agent 或 Router 窗口结束后保留消息前缀，重新采样后续决策。",
         )
 
     def decide(

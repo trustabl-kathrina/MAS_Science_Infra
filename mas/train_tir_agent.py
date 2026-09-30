@@ -156,7 +156,11 @@ def config_train_a800_2gpu() -> Dict[str, Any]:
 
 
 def train(config: Dict[str, Any], n_runners: int, active_agents: list[str]) -> None:
-    import pandas as pd
+    import sys
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from science_infra.control.task_files import load_task_rows
     from tir_agent import LitTirAgent
 
     import agentlightning as agl
@@ -218,15 +222,15 @@ def train(config: Dict[str, Any], n_runners: int, active_agents: list[str]) -> N
     val_path = _resolve_parquet_path(config["data"]["val_files"], "val.parquet")
     config["data"]["train_files"] = train_path
     config["data"]["val_files"] = val_path
-    if not os.path.exists(train_path) or not os.path.exists(val_path):
+    try:
+        train_data = load_task_rows(train_path)
+        val_data = load_task_rows(val_path)
+    except FileNotFoundError as exc:
         raise FileNotFoundError(
-            f"Missing parquet data. Expected {train_path} and {val_path} "
+            f"Missing dataset. Expected {train_path} and {val_path} "
             f"(canonical: MAS_Science_Infra/data/). "
             "Run: bash scripts/prepare_data.sh from tir_agent, or place files under repo data/."
-        )
-
-    train_data = pd.read_parquet(train_path).to_dict(orient="records")
-    val_data = pd.read_parquet(val_path).to_dict(orient="records")
+        ) from exc
     print(f"Train samples: {len(train_data)}, Val samples: {len(val_data)}")
     print(f"Model: {config['actor_rollout_ref']['model']['path']}")
     print(f"GPUs per node: {config['trainer']['n_gpus_per_node']}")

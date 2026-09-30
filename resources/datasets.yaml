@@ -1,4 +1,4 @@
-revision: 1
+revision: 2
 items:
   - id: train
     name: train.parquet
@@ -6,3 +6,21 @@ items:
   - id: validation
     name: val.parquet
     path: /root/autodl-tmp/MAS_Science_Infra/data/val.parquet
+  - id: hotpotqa
+    name: hotpotqa
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/hotpotqa/data/data.json
+  - id: bamboogle
+    name: bamboogle
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/bamboogle/data/data.json
+  - id: musique
+    name: musique
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/musique/data/data.json
+  - id: 2wiki
+    name: 2wiki
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/2wiki/data/data.json
+  - id: gaia
+    name: gaia
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/gaia/data/data.json
+  - id: medqa
+    name: medqa
+    path: /root/autodl-tmp/MAS_Science_Infra/ref_Rep/HIVE/test/medqa/data/data.json

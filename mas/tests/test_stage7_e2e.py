@@ -66,8 +66,8 @@ class TestC1SuccessCollectAndRoundtrip(unittest.TestCase):
         self.assertTrue({EventKind.TOOL_CALL, EventKind.TOOL_RESULT, EventKind.FINAL_ANSWER} <= kinds)
         self.assertIn(EventKind.MEMORY_READ, kinds)
         self.assertIn(EventKind.MEMORY_WRITE, kinds)
-        self.assertIn("react_loop", t0.meta.get("skills") or [])
-        self.assertIn("execute_python", t0.meta.get("tools") or [])
+        self.assertNotIn("react_loop", t0.meta.get("skills") or [])
+        self.assertIn("python_coder", t0.meta.get("tools") or [])
         dumped = json.loads(json.dumps({"batch": batch.model_dump(mode="json")}))
         restored = TrajectoryBatch.model_validate(dumped["batch"])
         self.assertEqual(len(restored.trajectories), 2)
@@ -119,7 +119,7 @@ class TestC5YamlTools(unittest.TestCase):
             _load_tasks("tasks_ok.json")
         )
         tools = batch.trajectories[0].meta.get("tools") or []
-        self.assertEqual(tools, ["web_search", "execute_python"])
+        self.assertEqual(tools, ["web_search", "python_coder"])
         names = [e.payload.get("name") for e in batch.trajectories[0].events]
         self.assertNotIn("wikipedia_search", names)
 
@@ -238,7 +238,7 @@ class TestC8CliClosedLoop(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
             payload = json.loads(traj.read_text(encoding="utf-8"))
             tools = payload["batch"]["trajectories"][0]["meta"]["tools"]
-            self.assertEqual(tools, ["web_search", "execute_python"])
+            self.assertEqual(tools, ["web_search", "python_coder"])
 
             d = _cli(["diagnose", str(traj), "--out", str(hyps_path)])
             self.assertEqual(d.returncode, 0, d.stderr + d.stdout)

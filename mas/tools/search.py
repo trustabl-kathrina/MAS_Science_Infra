@@ -178,13 +178,13 @@ def _wikipedia_fallback(query: str, max_results: int) -> str:
     return f"(web_search fallback via Wikipedia)\n{text}"
 
 
-def web_search(query: str, max_results: int = _MAX_RESULTS) -> str:
-    """Search the open web and return truncated title/snippet lines."""
+def search_organic(query: str, max_results: int = _MAX_RESULTS) -> Tuple[List[Dict[str, str]], str]:
+    """Return SERP hits (title, link, snippet) and a short error if none were parsed."""
     query = (query or "").strip()
     if not query:
-        return "Error: empty search query."
+        return [], "Error: empty search query."
     if os.getenv("TIR_OFFLINE_SEARCH", "").strip().lower() in ("1", "true", "yes"):
-        return "search_unavailable: TIR_OFFLINE_SEARCH=1"
+        return [], "search_unavailable: TIR_OFFLINE_SEARCH=1"
 
     headers = {
         "User-Agent": (
@@ -215,10 +215,54 @@ def web_search(query: str, max_results: int = _MAX_RESULTS) -> str:
                 continue
             organic = parser(html, max_results)
             if organic:
-                return _format_organic(organic)
+                return organic, ""
             errors.append(f"{label}/{name}: 0 results html={len(html)}")
+    return [], "search_unavailable: " + "; ".join(errors[-8:])
 
-    wiki = _wikipedia_fallback(query, max_results)
+
+def web_search(query: str, max_results: int = _MAX_RESULTS) -> str:
+    """Search the open web and return truncated title/snippet lines."""
+    query = (query or "").strip()
+    if not query:
+        return "Error: empty search query."
+    organic, err = search_organic(query, max_results)
+    if organic:
+        return _format_organic(organic)
+    wiki = ""
+    if not err.startswith("Error:") and "TIR_OFFLINE_SEARCH" not in err:
+        wiki = _wikipedia_fallback(query, max_results)
     if wiki:
         return wiki
-    return "search_unavailable: " + "; ".join(errors[-8:])
+    return err or "search_unavailable"
+
+
+def fetch_page(url: str, max_chars: int = _MAX_SNIPPET_CHARS) -> str:
+    """Fetch a URL and return truncated visible text (web_search kernel)."""
+    url = (url or "").strip()
+    if not url:
+        return "Error: empty url."
+    if os.getenv("TIR_OFFLINE_SEARCH", "").strip().lower() in ("1", "true", "yes"):
+        return "search_unavailable: TIR_OFFLINE_SEARCH=1"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    errors: List[str] = []
+    for proxies in proxy_candidates():
+        html, err = _request("GET", url, headers=headers, proxies=proxies, timeout=8.0)
+        if err:
+            errors.append(err)
+            continue
+        soup = BeautifulSoup(html or "", "html.parser")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        text = " ".join(soup.get_text(" ", strip=True).split())
+        if not text:
+            continue
+        if len(text) > max_chars:
+            text = text[:max_chars] + " ...[truncated]"
+        return text
+    return "fetch_unavailable: " + "; ".join(errors[-4:])
+

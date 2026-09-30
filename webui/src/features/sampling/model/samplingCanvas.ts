@@ -12,7 +12,7 @@ export function opportunitiesByEdge(
     const relation = edge || edges.find(item =>
       item.source === opportunity.edge_source
       && item.target === opportunity.edge_target
-      && item.data?.kind === 'tool_call');
+      && ['route', 'message', 'feedback', 'tool_call'].includes(String(item.data?.kind || '')));
     if (relation) output.set(relation.id, opportunity);
   }
   return output;

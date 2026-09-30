@@ -1,0 +1,40 @@
+label: 最小 PEV（python_coder）
+schema_version: "0.3"
+topology: centralized
+entry_agent: planner
+hub:
+  role: planner
+  skills: []
+tools:
+  - python_coder
+agents:
+  - id: planner
+    kind: planner
+    role: planner
+    system_prompt: "选出 python_coder 并给出 code。只输出 JSON：next, args, sub_goal, done。"
+    tools:
+      - python_coder
+    trainable: true
+  - id: python_coder
+    kind: tool
+    trainable: false
+  - id: verifier
+    kind: verifier
+    trainable: true
+    system_prompt: "根据 tool-agent 输出判断子目标是否完成，只输出 JSON。"
+routers:
+  - id: route_exec
+    candidates:
+      - python_coder
+    strategy: from_plan
+    output_contract: json
+edges:
+  - from: planner
+    to: route_exec
+    kind: route
+  - from: route_exec
+    to: verifier
+    kind: message
+  - from: verifier
+    to: planner
+    kind: feedback

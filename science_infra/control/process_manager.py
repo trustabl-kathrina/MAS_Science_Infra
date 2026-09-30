@@ -170,6 +170,74 @@ class ProcessManager:
         self._write_status(experiment_id, run_id, row)
         return row
 
+    def start_inline(
+        self,
+        *,
+        kind: str,
+        experiment_id: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Register an in-process job whose stdout the console can tail."""
+        run_id = uuid4().hex[:12]
+        run_dir = self.run_dir(experiment_id, run_id)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = run_dir / "stdout.log"
+        log_path.write_text("", encoding="utf-8")
+        row = {
+            "run_id": run_id,
+            "kind": kind,
+            "experiment_id": experiment_id,
+            "state": "running",
+            "running": True,
+            "pid": None,
+            "process_identity": None,
+            "returncode": None,
+            "log_path": str(log_path),
+            "started_at": time.time(),
+            "ended_at": None,
+            "stop_reason": None,
+            "failure_stage": None,
+            "message": None,
+            "meta": dict(meta or {}),
+        }
+        with self._lock:
+            self._pending[run_id] = row
+        self._write_status(experiment_id, run_id, row)
+        return dict(row)
+
+    def append_log(self, experiment_id: str, run_id: str, line: str) -> None:
+        path = self.run_dir(experiment_id, run_id) / "stdout.log"
+        text = line if line.endswith("\n") else f"{line}\n"
+        with self._lock:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+
+    def finish_inline(
+        self,
+        experiment_id: str,
+        run_id: str,
+        *,
+        state: str,
+        message: Optional[str] = None,
+        returncode: int = 0,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            current = self._pending.get(run_id) or self.disk_run(run_id, experiment_id) or {}
+            row = {
+                **current,
+                "run_id": run_id,
+                "experiment_id": experiment_id,
+                "state": state,
+                "running": False,
+                "ended_at": time.time(),
+                "returncode": returncode,
+                "message": message,
+            }
+            self._pending.pop(run_id, None)
+        self._write_status(experiment_id, run_id, row)
+        return row
+
     def mark_failed(
         self,
         *,

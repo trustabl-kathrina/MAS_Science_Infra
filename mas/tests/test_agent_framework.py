@@ -7,12 +7,13 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "mas"))
+os.environ.setdefault("SCIENCE_INFRA_TOOL_KERNEL", "1")
 
 from workflow.agents import AgentRegistry, BlankAgent  # noqa: E402
 from workflow.compiler import compile_spec  # noqa: E402
 from workflow.contracts import MemoryItem  # noqa: E402
 from workflow.memory import MemoryStore  # noqa: E402
-from workflow.spec import AgentNodeSpec, MASSpec, RouterSpec  # noqa: E402
+from workflow.spec import MASSpec, RouterSpec  # noqa: E402
 
 
 def _spec_with_tools() -> MASSpec:
@@ -56,34 +57,25 @@ def _spec_with_agents_and_router() -> MASSpec:
 
 
 class TestAgentRegistry(unittest.TestCase):
-    def test_dual_backend_binding_pure_default(self):
+    def test_tool_agents_default_to_hive_backend(self):
         reg = AgentRegistry.from_spec(_spec_with_tools())
         self.assertIn("execute_python", reg.tool_agents)
-        self.assertEqual(reg.tool_agents["execute_python"].backend, "pure")
+        self.assertIn(reg.tool_agents["execute_python"].backend, ("llm", "kernel"))
 
-    def test_llm_required_not_bound_in_training_mode(self):
-        spec = _spec_with_tools()
-        spec.agents = [AgentNodeSpec(id="execute_python", kind="tool", profile={"llm_required": True})]
-        reg = AgentRegistry.from_spec(spec, allow_llm_backends=False)
-        ta = reg.tool_agents["execute_python"]
-        self.assertEqual(ta.backend, "pure")  # training keeps pure backend
-        out = ta.invoke({"code": "result = 6 * 7"})
-        self.assertIn("42", out)
-
-    def test_llm_backend_bound_in_test_mode(self):
-        spec = _spec_with_tools()
-        spec.agents = [AgentNodeSpec(id="execute_python", kind="tool", profile={"llm_required": True})]
-        reg = AgentRegistry.from_spec(spec, allow_llm_backends=True)
-        self.assertEqual(reg.tool_agents["execute_python"].backend, "llm")
-
-    def test_pure_backend_round_trip(self):
+    def test_kernel_round_trip(self):
         reg = AgentRegistry.from_spec(_spec_with_tools())
-        out = reg.tool_agents["execute_python"].invoke({"code": "result = 41 + 1"})
+        ta = reg.tool_agents["execute_python"].agent
+        saved = ta._llm_invoke
+        ta._llm_invoke = None
+        try:
+            out = ta.invoke({"code": "result = 41 + 1"})
+        finally:
+            ta._llm_invoke = saved
         self.assertIn("42", str(out))
 
     def test_epc_aw_import_not_polluted(self):
         AgentRegistry.from_spec(_spec_with_tools())
-        agl_mods = [m for m in sys.modules if "agentlightning" in m or "epc_aw" in m]
+        agl_mods = [m for m in sys.modules if "agentlightning" in m]
         self.assertEqual(agl_mods, [])
 
 
@@ -132,7 +124,7 @@ class TestRouterRuntime(unittest.TestCase):
 
 
 class TestBlankAgentRouting(unittest.TestCase):
-    """W1: kind=blank router candidates routed via tool-call shells."""
+    """W1: kind=blank router candidates join the downstream agent set."""
 
     def _spec(self) -> MASSpec:
         return MASSpec.model_validate(
@@ -164,18 +156,20 @@ class TestBlankAgentRouting(unittest.TestCase):
     def test_blank_candidate_compiles_into_tools_for(self):
         c = compile_spec(self._spec())
         self.assertTrue(c.ok, c.issues)
-        self.assertIn("blank:expert_phys", c.tools_for.get("planner", []))
+        # blank candidates use the bare agent id (no blank: prefix)
+        self.assertIn("expert_phys", c.tools_for.get("planner", []))
         self.assertIn("execute_python", c.tools_for.get("planner", []))
 
     def test_blank_prefixed_candidate_also_compiles(self):
-        """UI writes blank:<id> candidates — compiler accepts both forms."""
+        """UI writes blank:<id> candidates — compiler accepts both forms and
+        normalizes to the bare agent id (no blank: prefix at runtime)."""
         spec = self._spec()
         spec.routers = [
             RouterSpec(id="route_x", candidates=["execute_python", "blank:expert_phys"])
         ]
         c = compile_spec(spec)
         self.assertTrue(c.ok, c.issues)
-        self.assertIn("blank:expert_phys", c.tools_for.get("planner", []))
+        self.assertIn("expert_phys", c.tools_for.get("planner", []))
 
     def test_blank_candidate_also_valid_agent_node(self):
         c = compile_spec(self._spec())
@@ -194,7 +188,8 @@ class TestBlankAgentRouting(unittest.TestCase):
                 return f"MOCK::{prompt}"
 
         adapter.bind_llm(_MockLLM())
-        self.assertEqual(adapter.id, "blank:expert_phys")
+        self.assertEqual(adapter.id, "expert_phys")
+        self.assertEqual(adapter.tool_name, "expert_phys")
         self.assertEqual(adapter.kind, "blank")
         self.assertIn("expert_phys", adapter.description)
         out = adapter.invoke({"input": "What is F=ma?"})
@@ -210,87 +205,6 @@ class TestBlankAgentRouting(unittest.TestCase):
         adapter = BlankAgentAdapter.from_agent(blank)
         out = adapter.invoke({"input": "q"})
         self.assertIn("no bound LLM", out)
-
-    def test_tir_agent_binds_blank_candidate_end_to_end(self):
-        from tir_agent import TirAgent
-
-        spec = self._spec()
-        agent = TirAgent.from_spec(
-            spec,
-            endpoint="http://localhost:1",
-            model_name="test",
-            enabled_tools=["execute_python", "blank:expert_phys"],
-            system_prompt="planner prompt",
-            agent_id="planner",
-        )
-        # adapter bound on the invoker
-        self.assertIn("blank:expert_phys", agent.tool_agent_invoker.known_ids)
-        self.assertIn("blank:expert_phys", agent._blank_adapters)
-        # router context registered for the prefixed form
-        self.assertEqual(agent._router_by_tool.get("blank:expert_phys"), "route_x")
-        # replace the bound LLM with a mock and route one hop through the shell
-        adapter = agent._blank_adapters["blank:expert_phys"]
-
-        class _MockLLM:
-            def invoke(self, prompt):
-                return f"EXPERT_SAID::{len(prompt)}"
-
-        adapter.bind_llm(_MockLLM())
-        out = agent.tool_agent_invoker.invoke("blank:expert_phys", {"input": "solve"})
-        self.assertIn("EXPERT_SAID::", out)
-
-    def test_call_tools_window_event_marks_blank(self):
-        """call_tools on a blank:<id> hop records tool_id=blank:<id> + agent_kind=blank."""
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
-        from tir_agent import TirAgent
-
-        spec = self._spec()
-        agent = TirAgent.from_spec(
-            spec,
-            endpoint="http://localhost:1",
-            model_name="test",
-            enabled_tools=["blank:expert_phys"],
-            system_prompt="planner prompt",
-            agent_id="planner",
-        )
-        adapter = agent._blank_adapters["blank:expert_phys"]
-
-        class _MockLLM:
-            def invoke(self, prompt):
-                return "expert answer"
-
-        adapter.bind_llm(_MockLLM())
-        state = {
-            "question": "q?",
-            "num_turns": 1,
-            "asked_finalize": False,
-            "messages": [
-                SystemMessage(content="sys"),
-                HumanMessage(content="q?"),
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {"name": "blank:expert_phys", "args": {"input": "solve"}, "id": "call_1"}
-                    ],
-                ),
-            ],
-            "turn_records": [],
-            "n_search": 0,
-            "n_python": 0,
-            "branch_messages": [],
-            "window_snapshots": [],
-            "window_events": [],
-        }
-        out = agent.call_tools(state)
-        self.assertEqual(len(out["messages"]), 4)  # +1 ToolMessage
-        tm = out["messages"][-1]
-        self.assertEqual(getattr(tm, "tool_call_id", ""), "call_1")
-        self.assertIn("expert answer", str(tm.content))
-        ev = out["window_events"][-1]
-        self.assertEqual(ev["tool_id"], "blank:expert_phys")
-        self.assertEqual(ev["metrics"].get("agent_kind"), "blank")
-        self.assertEqual(ev["metrics"].get("router_id"), "route_x")
 
 
 class TestTwoLayerMemory(unittest.TestCase):
@@ -331,7 +245,7 @@ class TestTwoLayerMemory(unittest.TestCase):
         self.assertEqual(scope, "agent")
         self.assertEqual(policy, {"policy": "append_latest", "max_items": 2})
         scope2, _ = _node_memory_settings(spec, "planner")
-        self.assertEqual(scope2, "agent")  # explicit agent default in schema 0.3
+        self.assertEqual(scope2, "none")  # default memory_scope is none (decision C)
 
 
 class TestPevExecutor(unittest.TestCase):

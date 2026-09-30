@@ -1,0 +1,52 @@
+label: 检索 PEV（wiki / google / web）
+schema_version: "0.3"
+topology: centralized
+entry_agent: planner
+hub:
+  role: planner
+  skills: []
+tools:
+  - wikipedia_search
+  - google_search
+  - web_search
+agents:
+  - id: planner
+    kind: planner
+    role: planner
+    system_prompt: "选出检索 tool-agent。web_search 必须同时给 query 和 url。只输出 JSON。"
+    tools:
+      - wikipedia_search
+      - google_search
+      - web_search
+    trainable: true
+  - id: wikipedia_search
+    kind: tool
+    trainable: false
+  - id: google_search
+    kind: tool
+    trainable: false
+  - id: web_search
+    kind: tool
+    trainable: false
+  - id: verifier
+    kind: verifier
+    trainable: true
+    system_prompt: "根据 tool-agent 输出判断子目标是否完成，只输出 JSON。"
+routers:
+  - id: route_exec
+    candidates:
+      - wikipedia_search
+      - google_search
+      - web_search
+    strategy: from_plan
+    output_contract: json
+edges:
+  - from: planner
+    to: route_exec
+    kind: route
+  - from: route_exec
+    to: verifier
+    kind: message
+  - from: verifier
+    to: planner
+    kind: feedback

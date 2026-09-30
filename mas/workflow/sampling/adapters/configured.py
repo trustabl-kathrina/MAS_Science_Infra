@@ -8,7 +8,7 @@ from rl.hooks.branch_policy import allocate_forks
 from workflow.contracts import BranchSite
 from workflow.gates import GateContext, evaluate_gate
 from workflow.sampling.adapters.base import SamplingStrategyAdapter
-from workflow.sampling.adapters.tool_result import tool_result_opportunities
+from workflow.sampling.adapters.agent_router import agent_router_opportunities
 from workflow.sampling.contracts import (
     SamplingDecision,
     SamplingOpportunity,
@@ -23,13 +23,17 @@ class ConfiguredGateAdapter(SamplingStrategyAdapter):
     allowed_gates = ("entropy_delta", "arpo", "always", "dual_entropy")
 
     def supports_window(self, window: SamplingWindow) -> bool:
-        return window.kind == WindowKind.TOOL_RESULT
+        return window.kind in (
+            WindowKind.AGENT_COMPLETE,
+            WindowKind.VERIFICATION_COMPLETE,
+            WindowKind.TOOL_RESULT,
+        )
 
     def opportunities(self, workflow: Any) -> Iterable[SamplingOpportunity]:
-        return tool_result_opportunities(
+        return agent_router_opportunities(
             workflow,
             allowed_gates=self.allowed_gates,
-            message="Tool Result 后保留 messages 前缀并扩展后续路径。",
+            message="Agent 或 Router 窗口结束后保留 messages 前缀并扩展后续路径。",
         )
 
     def decide(

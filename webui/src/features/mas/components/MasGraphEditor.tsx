@@ -455,12 +455,16 @@ function GraphWorkbench({
       }}>定位</Button>}
       {graph.notice && <Button size="sm" variant="ghost" aria-label="关闭提示" onClick={() => graph.setNotice('')}><X size={14} /></Button>}
     </div>}
-    {mode === 'workflow' && libraryOpen && <GraphPalette palette={palette} nodes={graph.nodes} tab={libraryTab} onTabChange={setLibraryTab} onAdd={add}
+    {mode === 'workflow' && libraryOpen && <GraphPalette palette={palette} nodes={graph.nodes}
+      poolMembers={(graph.nodes.find((node) => node.selected && node.type === 'pool')
+        || graph.nodes.find((node) => node.type === 'pool' && graph.nodes.filter((item) => item.type === 'pool').length === 1)
+        || graph.nodes.find((node) => node.type === 'pool' && node.id === `pool_${graph.nodes.find((item) => item.selected && item.type === 'router')?.id}`))?.data.members || []}
+      tab={libraryTab} onTabChange={setLibraryTab} onAdd={add}
       onClose={() => onLibraryOpenChange(false)} onTemplate={(template) => {
         graph.applyTemplate(template); setConnection(null);
         requestAnimationFrame(() => void flow.fitView({ padding: 0.25, maxZoom: 1 }));
       }} />}
-    {mode === 'workflow' && inspectorVisible && (graph.selected ? <NodeInspector selected={graph.selected} nodes={graph.nodes} palette={palette} entryId={workflow.entry_agent || 'hub'}
+    {mode === 'workflow' && inspectorVisible && (graph.selected ? <NodeInspector selected={graph.selected} nodes={graph.nodes} palette={palette} entryId={workflow.entry_agent || 'planner'}
         onModelResources={onModelResources} defaultModel={defaultModel}
         modelOptions={modelOptions} modelOptionsLoading={modelOptionsLoading} modelOptionsError={modelOptionsError}
         onRefreshModelOptions={onRefreshModelOptions}

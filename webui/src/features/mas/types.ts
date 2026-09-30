@@ -26,6 +26,9 @@ export type GraphNodeData = Record<string, unknown> & {
   verify?: string | null;
   max_feedback_hops?: number;
   candidates?: string[];
+  members?: string[];
+  memberTiers?: Record<string, 'lite' | 'pro'>;
+  routerId?: string;
   strategy?: RouterStrategy;
   scorer?: string | null;
   backend?: string;
@@ -40,7 +43,7 @@ export type GraphNodeData = Record<string, unknown> & {
 
 export type EdgeKind = 'tool_call' | 'message' | 'feedback' | 'route' | 'sample_barrier';
 export type HandleId = 'top' | 'right' | 'bottom' | 'left';
-export type GraphNodeKind = 'agent' | 'tool' | 'router';
+export type GraphNodeKind = 'agent' | 'tool' | 'router' | 'pool';
 export interface GraphNodePreset {
   nodeType: GraphNodeKind;
   id: string;

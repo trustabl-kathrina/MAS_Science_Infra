@@ -1,4 +1,4 @@
-"""AgentRole / Skill sockets. Default: hub + react_loop + verifier; planner/executor roles registered."""
+"""AgentRole / Skill sockets. Default skills are empty; react_loop is optional."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class VerifierSkill:
             return {
                 "ok": False,
                 "output": {"reason": "missing_or_error", "error": err},
-                "route": "hub",
+                "route": "planner",  # feedback target is the planner node
             }
         return {"ok": True, "output": {"reason": "pass"}, "route": None}
 
@@ -147,5 +147,5 @@ def invoke_skill(name: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
 def invoke_hub_skills(spec: Any, ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Run every hub skill. Unknown names raise KeyError (no silent Solver import)."""
     REGISTRY.get_role("hub")
-    skills = list(getattr(getattr(spec, "hub", None), "skills", None) or ["react_loop"])
+    skills = list(getattr(getattr(spec, "hub", None), "skills", None) or [])
     return [invoke_skill(name, ctx) for name in skills]

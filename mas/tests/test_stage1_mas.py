@@ -38,16 +38,15 @@ class TestSpecAndPlugins(unittest.TestCase):
         from workflow.spec import load_spec
 
         spec = load_spec()
-        self.assertEqual(spec.topology, "hub_react")
+        self.assertEqual(spec.topology, "centralized")
         self.assertEqual(spec.memory.agent, "messages")
         self.assertEqual(spec.memory.system, "none")
-        self.assertIn("execute_python", spec.tools)
+        self.assertIn("python_coder", spec.tools)
         self.assertIn("web_search", spec.tools)
         for name in spec.hub.skills:
             REGISTRY.get_skill(name)
-        REGISTRY.get_role("hub")
         REGISTRY.get_role("planner")
-        REGISTRY.get_role("executor")
+        REGISTRY.get_role("verifier")
         with self.assertRaises(KeyError):
             REGISTRY.get_skill("causal_analysis")
 
@@ -55,8 +54,8 @@ class TestSpecAndPlugins(unittest.TestCase):
         from workflow.spec import load_spec
 
         spec = load_spec("/tmp/no-such-hub-react.yaml")
-        self.assertEqual(spec.topology, "hub_react")
-        self.assertIn("execute_python", spec.tools)
+        self.assertEqual(spec.topology, "centralized")
+        self.assertIn("python_coder", spec.tools)
 
 
 class TestCanonicalReward(unittest.TestCase):

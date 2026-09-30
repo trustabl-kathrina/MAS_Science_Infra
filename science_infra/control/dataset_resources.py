@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from uuid import uuid4
 
 import yaml
@@ -31,8 +32,8 @@ class DatasetFields(BaseModel):
     @classmethod
     def clean_path(cls, value: str) -> str:
         path = server_data_path(value)
-        if not path.endswith(".parquet"):
-            raise ValueError("请选择服务器上的 Parquet 文件。")
+        if not path.endswith((".parquet", ".json")):
+            raise ValueError("请选择服务器上的 Parquet 或 JSON 文件。")
         return path
 
 
@@ -43,6 +44,15 @@ class Dataset(DatasetFields):
 class DatasetCatalog(BaseModel):
     revision: int = Field(ge=1)
     items: list[Dataset]
+
+
+class DatasetListed(Dataset):
+    exists: bool = False
+
+
+class DatasetCatalogView(BaseModel):
+    revision: int = Field(ge=1)
+    items: list[DatasetListed]
 
 
 class DatasetWrite(DatasetFields):
@@ -65,9 +75,19 @@ def _write(catalog: DatasetCatalog) -> None:
 
 
 @router.get("")
-def list_datasets() -> DatasetCatalog:
+def list_datasets() -> DatasetCatalogView:
     with _LOCK:
-        return _read()
+        catalog = _read()
+    return DatasetCatalogView(
+        revision=catalog.revision,
+        items=[
+            DatasetListed(
+                **item.model_dump(),
+                exists=Path(item.path).expanduser().is_file(),
+            )
+            for item in catalog.items
+        ],
+    )
 
 
 def _save(body: DatasetWrite, dataset_id: str | None = None) -> DatasetCatalog:

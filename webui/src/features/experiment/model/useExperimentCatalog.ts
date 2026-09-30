@@ -24,8 +24,8 @@ export interface ExperimentCardState {
 function summarize(bundle: Bundle): ExperimentSummary {
   const workflow = bundle.workflow;
   const explicit = Boolean(workflow.agents?.length) || workflow.topology === 'graph';
-  const ids = new Set(explicit ? (workflow.agents || []).map(agent => agent.id) : ['hub']);
-  if (workflow.hub?.verify && ids.has('hub')) ids.add('verifier');
+  const ids = new Set(explicit ? (workflow.agents || []).map(agent => agent.id) : ['planner']);
+  if (workflow.hub?.verify && (ids.has('planner') || ids.has('hub'))) ids.add('verifier');
   return {
     id: bundle.id, name: bundle.meta.name || bundle.id, topology: workflow.topology,
     agentCount: ids.size, toolCount: new Set(workflow.tools || []).size, executable: bundle.executable.ok,

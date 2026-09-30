@@ -7,24 +7,43 @@ const sampling: SamplingSpec = {
   mode: 'arpo',
   group_n: 4,
   sites: [{
-    id: 'after-hub',
-    anchor: { kind: 'after_agent_turn', agent_id: 'hub' },
+    id: 'after-planner',
+    anchor: { kind: 'after_agent_turn', agent_id: 'planner' },
     gate: { type: 'entropy_delta', params: { threshold: 0.2 } },
   }],
 };
 
 describe('workflowGraph schema 0.3', () => {
-  it('keeps legacy workflow fields and sampling when the graph is serialized', () => {
+  it('defaults an empty canvas to planner, not hub', () => {
     const workflow: WorkflowSpec = {
-      schema_version: '0.1.0',
-      topology: 'hub_react',
-      entry_agent: 'hub',
-      hub: { role: 'orchestrator', skills: ['react_loop'] },
+      schema_version: '0.3',
+      topology: 'centralized',
+      entry_agent: 'planner',
+      hub: { role: 'planner', skills: [] },
+      tools: ['web_search'],
+      agents: [],
+      edges: [],
+      sampling,
+    };
+    const graph = workflowToFlow(workflow);
+    expect(graph.nodes.some((node) => node.id === 'hub')).toBe(false);
+    expect(graph.nodes.some((node) => node.id === 'executor')).toBe(false);
+    expect(graph.nodes.find((node) => node.data.kind === 'planner')?.id).toBe('planner');
+    expect(graph.nodes.some((node) => node.id === 'web_search')).toBe(false);
+  });
+
+  it('keeps sampling when the graph is serialized', () => {
+    const workflow: WorkflowSpec = {
+      schema_version: '0.3',
+      topology: 'centralized',
+      entry_agent: 'planner',
+      hub: { role: 'planner', skills: [] },
       tools: ['web_search'],
       agents: [{
-        id: 'hub',
-        role: 'orchestrator',
-        skills: ['react_loop'],
+        id: 'planner',
+        kind: 'planner',
+        role: 'planner',
+        skills: [],
         tools: ['web_search'],
         trainable: true,
         extension: { keep: true },
@@ -40,10 +59,11 @@ describe('workflowGraph schema 0.3', () => {
 
     expect(workflow).toEqual(original);
     expect(serialized.schema_version).toBe('0.3');
+    expect(serialized.entry_agent).toBe('planner');
     expect(serialized.tools).toContain('web_search');
     expect(serialized.sampling).toEqual(sampling);
     expect(serialized.extension).toEqual({ owner: 'research' });
-    expect(serialized.agents?.[0].extension).toEqual({ keep: true });
+    expect(serialized.agents?.find((agent) => agent.id === 'planner')?.extension).toEqual({ keep: true });
   });
 
   it('round-trips complete agent and router fields', () => {
@@ -51,15 +71,15 @@ describe('workflowGraph schema 0.3', () => {
       schema_version: '0.3',
       topology: 'graph',
       entry_agent: 'planner',
-      hub: { role: 'orchestrator', skills: ['react_loop'] },
-      tools: ['execute_python'],
+      hub: { role: 'planner', skills: [] },
+      tools: ['python_coder'],
       agents: [
         {
           id: 'planner',
           kind: 'planner',
           role: 'research_planner',
           skills: ['planning'],
-          tools: ['execute_python'],
+          tools: ['python_coder'],
           memory_scope: 'shared',
           system_prompt: 'Plan carefully',
           model: 'inherit',
@@ -68,17 +88,17 @@ describe('workflowGraph schema 0.3', () => {
           meta: { owner: 'team-a' },
         },
         {
-          id: 'execute_python',
+          id: 'python_coder',
           kind: 'tool',
           role: 'tool',
           trainable: false,
-          profile: { backend: 'pure' },
+          profile: { backend: 'llm' },
           meta: { capability: 'python' },
         },
       ],
       routers: [{
         id: 'expert_router',
-        candidates: ['execute_python', 'planner'],
+        candidates: ['python_coder', 'planner'],
         strategy: 'score',
         scorer: 'planner',
         meta: { purpose: 'expert-choice' },
@@ -90,7 +110,12 @@ describe('workflowGraph schema 0.3', () => {
 
     const graph = workflowToFlow(workflow);
     const router = graph.nodes.find((node) => node.type === 'router');
-    expect(router?.data.candidates).toEqual(['execute_python', 'planner']);
+    const pool = graph.nodes.find((node) => node.type === 'pool');
+    expect(router?.data.candidates).toEqual(['python_coder', 'planner']);
+    expect(pool?.id).toBe('pool_expert_router');
+    expect(pool?.data.members).toEqual(['python_coder', 'planner']);
+    expect(graph.nodes.some((node) => node.id === 'python_coder')).toBe(false);
+    expect(graph.edges.some((edge) => edge.source === 'expert_router' && edge.target === 'pool_expert_router' && edge.data?.kind === 'route')).toBe(true);
 
     const editedNodes = graph.nodes.map((node) => node.id === 'expert_router'
       ? { ...node, data: { ...node.data, strategy: 'round_robin' as const } }
@@ -106,14 +131,15 @@ describe('workflowGraph schema 0.3', () => {
       profile: { temperature: 0.2 },
       meta: { owner: 'team-a' },
     });
-    expect(serialized.agents?.find((agent) => agent.id === 'execute_python')).toMatchObject({
+    expect(serialized.agents?.find((agent) => agent.id === 'python_coder')).toMatchObject({
       kind: 'tool',
-      profile: { backend: 'pure' },
+      trainable: false,
+      profile: { backend: 'llm' },
       meta: { capability: 'python' },
     });
     expect(serialized.routers).toEqual([{
       id: 'expert_router',
-      candidates: ['execute_python', 'planner'],
+      candidates: ['python_coder', 'planner'],
       strategy: 'round_robin',
       scorer: 'planner',
       meta: { purpose: 'expert-choice' },
@@ -129,46 +155,100 @@ describe('workflowGraph schema 0.3', () => {
     expect(executableInfo(serialized)).toEqual({ ok: true, reason: 'graph_compiled' });
   });
 
-  it('uses route edges for routers and tool-call edges for tool agents', () => {
+  it('draws a pool under each router and keeps tool-agents inside it', () => {
     const workflow: WorkflowSpec = {
       schema_version: '0.3',
       topology: 'graph',
       entry_agent: 'planner',
-      hub: { role: 'orchestrator', skills: ['react_loop'] },
+      hub: { role: 'planner', skills: [] },
       tools: [],
       agents: [
         { id: 'planner', kind: 'planner' },
-        { id: 'python_agent', kind: 'tool' },
+        { id: 'python_agent', kind: 'tool', trainable: true },
+        { id: 'verifier', kind: 'verifier' },
+        { id: 'hub', kind: 'planner', role: 'hub', system_prompt: 'legacy' },
+        { id: 'executor', role: 'executor', tools: ['python_agent'] },
       ],
       routers: [{ id: 'router', candidates: ['python_agent'] }],
-      edges: [],
+      edges: [
+        { from: 'planner', to: 'router', kind: 'route' },
+        { from: 'router', to: 'verifier', kind: 'message' },
+      ],
     };
     const graph = workflowToFlow(workflow);
     const rules = createEdgeRules(graph.nodes, graph.edges, {
       edge_kinds: ['message', 'tool_call', 'feedback', 'route', 'sample_barrier'],
     });
 
+    expect(graph.nodes.some((node) => node.id === 'hub' || node.id === 'executor' || node.id === 'python_agent')).toBe(false);
+    expect(graph.nodes.find((node) => node.type === 'pool')?.data.members).toEqual(expect.arrayContaining(['python_agent']));
+    expect(graph.edges.map((edge) => [edge.source, edge.target, edge.data?.kind])).toEqual(expect.arrayContaining([
+      ['planner', 'router', 'route'],
+      ['router', 'pool_router', 'route'],
+      ['pool_router', 'verifier', 'message'],
+    ]));
     expect(rules.options({
       source: 'planner', target: 'router', sourceHandle: null, targetHandle: null,
-    })).toEqual([{ kind: 'route', reason: '' }]);
+    })[0]?.kind).toBe('route');
     expect(rules.error({
-      source: 'planner', target: 'python_agent', sourceHandle: null, targetHandle: null,
-    }, 'tool_call')).toBe('');
-    expect(rules.error({
-      source: 'planner', target: 'python_agent', sourceHandle: null, targetHandle: null,
-    }, 'message')).toContain('Tool');
+      source: 'router', target: 'verifier', sourceHandle: null, targetHandle: null,
+    }, 'route')).toContain('tool-agent pool');
+    const serialized = flowToWorkflow(graph.nodes, graph.edges, workflow);
+    expect(serialized.agents?.some((agent) => agent.id === 'hub' || agent.id === 'executor')).toBe(false);
+    expect(serialized.agents?.find((agent) => agent.id === 'python_agent')?.trainable).toBe(false);
+    expect(serialized.edges?.some((edge) => edge.from === 'router' && edge.to === 'verifier' && edge.kind === 'message')).toBe(true);
+    expect(serialized.edges?.some((edge) => edge.from.startsWith('pool_') || edge.to.startsWith('pool_'))).toBe(false);
+  });
+
+  it('folds two fan-out pools back onto their routers', () => {
+    const workflow: WorkflowSpec = {
+      schema_version: '0.3',
+      topology: 'centralized',
+      entry_agent: 'planner',
+      hub: { role: 'planner', skills: [] },
+      tools: ['python_coder', 'think'],
+      agents: [
+        { id: 'planner', kind: 'planner', trainable: true },
+        { id: 'python_coder', kind: 'tool', trainable: true },
+        { id: 'think', kind: 'tool', trainable: true },
+        { id: 'verifier', kind: 'verifier', trainable: true },
+      ],
+      routers: [
+        { id: 'route_a', candidates: ['python_coder'], strategy: 'from_plan' },
+        { id: 'route_b', candidates: ['think'], strategy: 'from_plan' },
+      ],
+      edges: [
+        { from: 'planner', to: 'route_a', kind: 'route' },
+        { from: 'planner', to: 'route_b', kind: 'route' },
+        { from: 'route_a', to: 'verifier', kind: 'message' },
+        { from: 'route_b', to: 'verifier', kind: 'message' },
+        { from: 'verifier', to: 'planner', kind: 'feedback' },
+      ],
+    };
+    const graph = workflowToFlow(workflow);
+    expect(graph.nodes.find((node) => node.id === 'pool_route_a')?.data.members).toEqual(['python_coder']);
+    expect(graph.nodes.find((node) => node.id === 'pool_route_b')?.data.members).toEqual(['think']);
+    expect(graph.nodes.some((node) => node.id === 'python_coder' || node.id === 'think')).toBe(false);
+    const serialized = flowToWorkflow(graph.nodes, graph.edges, workflow);
+    expect(serialized.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: 'route_a', to: 'verifier', kind: 'message' }),
+      expect.objectContaining({ from: 'route_b', to: 'verifier', kind: 'message' }),
+    ]));
+    expect(serialized.edges?.some((edge) => edge.from.startsWith('pool_') || edge.to.startsWith('pool_'))).toBe(false);
+    expect(serialized.agents?.find((agent) => agent.id === 'python_coder')?.trainable).toBe(false);
+    expect(serialized.agents?.find((agent) => agent.id === 'think')?.trainable).toBe(false);
   });
 
   it('reports missing router candidates without changing sampling', () => {
     const workflow: WorkflowSpec = {
       schema_version: '0.3',
       topology: 'graph',
-      entry_agent: 'hub',
-      hub: { role: 'orchestrator', skills: ['react_loop'] },
+      entry_agent: 'planner',
+      hub: { role: 'planner', skills: [] },
       tools: [],
-      agents: [{ id: 'hub', kind: 'hub' }],
-      routers: [{ id: 'router', candidates: ['missing'], strategy: 'llm_choice' }],
-      edges: [{ from: 'hub', to: 'router', kind: 'route' }],
+      agents: [{ id: 'planner', kind: 'planner' }],
+      routers: [{ id: 'router', candidates: ['missing'], strategy: 'from_plan' }],
+      edges: [{ from: 'planner', to: 'router', kind: 'route' }],
       sampling,
     };
 
@@ -178,5 +258,35 @@ describe('workflowGraph schema 0.3', () => {
       nodeId: 'router',
     });
     expect(workflow.sampling).toEqual(sampling);
+  });
+
+  it('stores a pool member tier on the tool agent profile', () => {
+    const workflow: WorkflowSpec = {
+      schema_version: '0.3',
+      topology: 'centralized',
+      entry_agent: 'planner',
+      hub: { role: 'planner', skills: [] },
+      tools: ['wikipedia_search'],
+      agents: [
+        { id: 'planner', kind: 'planner', tools: ['wikipedia_search'] },
+        { id: 'wikipedia_search', kind: 'tool', trainable: false, profile: { backend: 'llm' } },
+      ],
+      routers: [{ id: 'route_exec', candidates: ['wikipedia_search'], strategy: 'from_plan' }],
+      edges: [
+        { from: 'planner', to: 'route_exec', kind: 'route' },
+        { from: 'route_exec', to: 'verifier', kind: 'message' },
+      ],
+    };
+    const graph = workflowToFlow(workflow);
+    const pool = graph.nodes.find((node) => node.id === 'pool_route_exec');
+    expect(pool?.data.memberTiers?.wikipedia_search).toBeUndefined();
+    const edited = graph.nodes.map((node) => node.id === pool?.id
+      ? { ...node, data: { ...node.data, memberTiers: { wikipedia_search: 'pro' as const } } }
+      : node);
+    const serialized = flowToWorkflow(edited, graph.edges, workflow);
+    expect(serialized.agents?.find((agent) => agent.id === 'wikipedia_search')?.profile).toMatchObject({
+      backend: 'llm',
+      tier: 'pro',
+    });
   });
 });

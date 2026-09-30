@@ -1,0 +1,71 @@
+label: score 专家组 + round_robin
+schema_version: "0.3"
+topology: centralized
+entry_agent: planner
+hub:
+  role: planner
+  skills: []
+tools:
+  - python_coder
+  - think
+agents:
+  - id: planner
+    kind: planner
+    role: planner
+    system_prompt: "把子任务交给专家组或轮询工具。只输出 JSON：next, args, sub_goal, done。"
+    tools:
+      - python_coder
+      - think
+    trainable: true
+  - id: expert_a
+    kind: blank
+    system_prompt: "You are expert A. Output JSON {\"output\": string}."
+    trainable: true
+  - id: expert_b
+    kind: blank
+    system_prompt: "You are expert B. Output JSON {\"output\": string}."
+    trainable: true
+  - id: judge
+    kind: blank
+    system_prompt: "Score the candidate from 0 to 1. Output JSON {\"score\": number}."
+    trainable: false
+  - id: python_coder
+    kind: tool
+    trainable: false
+  - id: think
+    kind: tool
+    trainable: false
+  - id: verifier
+    kind: verifier
+    trainable: true
+    system_prompt: "根据产出判断子目标是否完成，只输出 JSON。"
+routers:
+  - id: route_score
+    candidates:
+      - expert_a
+      - expert_b
+    strategy: score
+    scorer: judge
+    output_contract: json
+  - id: route_robin
+    candidates:
+      - python_coder
+      - think
+    strategy: round_robin
+    output_contract: json
+edges:
+  - from: planner
+    to: route_score
+    kind: route
+  - from: planner
+    to: route_robin
+    kind: route
+  - from: route_score
+    to: verifier
+    kind: message
+  - from: route_robin
+    to: verifier
+    kind: message
+  - from: verifier
+    to: planner
+    kind: feedback

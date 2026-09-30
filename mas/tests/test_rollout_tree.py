@@ -88,6 +88,54 @@ class TestRolloutTreeContract(unittest.TestCase):
         self.assertEqual(child["parent_id"], "p0")
         self.assertEqual(child["metrics"].get("event_kind"), "after_agent_turn")
 
+    def test_router_window_records_site_on_child(self):
+        from workflow.active_set import tree_from_plans, ForkPlan
+        from workflow.contracts import BranchAnchor, BranchGate, BranchSite
+        from workflow.sampling.adapters.arpo import ArpoSamplingAdapter
+        from workflow.sampling.contracts import SamplingWindow, WindowKind
+        from workflow.sampling.core import ResumableWindow, SamplingCore
+
+        site = BranchSite(
+            id="after_route_exec",
+            anchor=BranchAnchor(kind="after_agent_turn", agent_id="route_exec"),
+            gate=BranchGate(type="always"),
+            fork={"beam_size": 2},
+        )
+        window = SamplingWindow(
+            window_id="w-router",
+            owner_agent_id="route_exec",
+            kind=WindowKind.AGENT_COMPLETE,
+            snapshot_ref="snap-router",
+            interaction={"legacy_event_kind": "after_agent_turn"},
+        )
+        planned = SamplingCore(ArpoSamplingAdapter()).plan(
+            parent_rollout_id="parent",
+            sites=[site],
+            windows=[ResumableWindow(
+                window=window,
+                resume_messages=[{"role": "user", "content": "q"}],
+            )],
+            remaining=2,
+            depth=0,
+            max_depth=2,
+            default_beam=2,
+            context_factory=lambda _site, _window: {},
+        )
+        self.assertEqual(len(planned), 1)
+        self.assertEqual(planned[0].plan.site_id, "after_route_exec")
+        tree = tree_from_plans("parent", [ForkPlan(
+            resume_messages=[{"role": "user", "content": "q"}],
+            parent_id="parent",
+            depth=1,
+            reason="always",
+            site_id=planned[0].plan.site_id,
+            role="child",
+            meta={"event_kind": "after_agent_turn", "site_id": planned[0].plan.site_id},
+        )])
+        child = tree.nodes[1]
+        self.assertEqual(child.site_id, "after_route_exec")
+        self.assertEqual(child.metrics.get("site_id"), "after_route_exec")
+
     def test_tree_from_plans_empty(self):
         from workflow.active_set import tree_from_plans
 

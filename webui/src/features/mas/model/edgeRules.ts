@@ -26,6 +26,9 @@ export function createEdgeRules(nodes: GraphNode[], edges: GraphEdge[], palette:
   const incomingRoutes = new Map<string, GraphEdge[]>();
   const isTool = (node?: GraphNode) => node?.type === 'tool' || node?.data.kind === 'tool';
   const isRouter = (node?: GraphNode) => node?.type === 'router';
+  const isPool = (node?: GraphNode) => node?.type === 'pool';
+  const isPoolTarget = (node?: GraphNode) => Boolean(node && !isTool(node) && !isRouter(node) && !isPool(node)
+    && (node.data.kind === 'planner' || node.data.kind === 'verifier' || node.data.kind === 'blank' || !node.data.kind));
   const tools = new Set([
     ...(palette.tools ?? KNOWN_TOOLS),
     ...nodes.filter(isTool).map((node) => node.id),
@@ -57,8 +60,26 @@ export function createEdgeRules(nodes: GraphNode[], edges: GraphEdge[], palette:
     if (!source || !target) return '连接对象已不存在。';
     if (source.id === target.id) return '请连接两个不同的实体。';
     if (!isEdgeKind(kind) || !supported.has(kind)) return '当前不支持此关系类型。';
-    if (isRouter(source) || isRouter(target)) {
-      if (isTool(source) || isTool(target)) return 'Router 只能连接 Agent。';
+    const other = (outgoing.get(source.id) || []).filter((edge) => edge.id !== replacing);
+    if (isPool(source) || isPool(target) || (isRouter(source) && !isRouter(target))) {
+      if (isRouter(source) && isPool(target)) {
+        if (kind !== 'route') return 'Router 只能用路由关系连接 tool-agent pool。';
+        if (other.some((edge) => edge.data?.kind === 'route' || nodeById.get(edge.target)?.type === 'pool')) {
+          return 'Router 只能连接一个 tool-agent pool。';
+        }
+        return '';
+      }
+      if (isRouter(source)) return 'Router 的下游只能是 tool-agent pool。';
+      if (isPool(target)) return '只有 Router 可以连接 tool-agent pool。';
+      if (isPool(source)) {
+        if (kind !== 'message') return 'tool-agent pool 使用消息关系连接下游 Agent。';
+        if (!isPoolTarget(target)) return 'tool-agent pool 的下游必须是 planner、verifier 或自定义 Agent。';
+        if (other.some((edge) => edge.data?.kind === 'message')) return 'tool-agent pool 只能有一个下游。';
+        return '';
+      }
+    }
+    if (isRouter(target)) {
+      if (isTool(source) || isPool(source)) return 'Router 的上游必须是 Agent。';
       if (kind !== 'route') return 'Router 使用任务路由关系连接上游 Agent。';
     } else if (isTool(source) && isTool(target)) {
       return '工具之间不能直接连接。';
@@ -69,7 +90,6 @@ export function createEdgeRules(nodes: GraphNode[], edges: GraphEdge[], palette:
     } else if (!isRouter(source) && !isRouter(target) && (source.type !== 'agent' || target.type !== 'agent' || isTool(source) || isTool(target))) {
       return 'Agent 协作不能连接 Tool。';
     }
-    const other = (outgoing.get(source.id) || []).filter((edge) => edge.id !== replacing);
     if (other.some((edge) => edge.target === target.id && edge.data?.kind === kind)) {
       return kind === 'tool_call' ? '该 Agent 已具备此工具。' : '该关系已经存在。';
     }
@@ -78,12 +98,15 @@ export function createEdgeRules(nodes: GraphNode[], edges: GraphEdge[], palette:
       const matches = (node: GraphNode, roles: string[]) =>
         roles.includes(node.id) || roles.includes(node.data.role || '') || roles.includes(node.data.kind || '');
       if (!matches(source, ['verifier', 'critic'])) return '反馈方必须是 verifier 或 critic。';
-      if (!matches(target, ['hub', 'planner', 'orchestrator'])) return '反馈接收方必须是 hub、planner 或 orchestrator。';
+      if (!matches(target, ['planner']) || target.id === 'hub') return '反馈接收方必须是 planner。';
+    }
+    if (kind === 'route' && isRouter(target)) {
+      return '';
     }
     if (kind === 'route' && (incomingRoutes.get(target.id) || []).some((edge) => edge.id !== replacing)) {
       return '接收方已有输入路由，最多只能接受一条。';
     }
-    if (other.some((edge) => edge.data?.kind === kind)) {
+    if (other.some((edge) => edge.data?.kind === kind) && !(kind === 'route' && isRouter(target))) {
       return `发送方已有${edgeDefinition(kind).title}目标，当前运行时不支持同类型多目标输出。`;
     }
     if ((kind === 'route' || kind === 'message') && other.some((edge) =>
@@ -97,8 +120,10 @@ export function createEdgeRules(nodes: GraphNode[], edges: GraphEdge[], palette:
     const connection = normalize(raw);
     const parties = [nodeById.get(connection.source), nodeById.get(connection.target)];
     const hasTool = parties.some(isTool);
+    const hasPool = parties.some(isPool);
     const hasRouter = parties.some(isRouter);
-    const kinds = hasRouter ? ['route'] as const
+    const kinds = hasPool && isPool(nodeById.get(connection.source)) ? ['message'] as const
+      : hasRouter || hasPool ? ['route'] as const
       : hasTool ? ['tool_call'] as const
         : EDGE_KINDS.filter((kind) => kind !== 'tool_call');
     return kinds.map((kind) => ({ kind, reason: error(connection, kind, replacing) }));

@@ -21,9 +21,9 @@ function agentsOf(workflow: WorkflowSpec): AgentSpec[] {
   return workflow.agents?.length
     ? workflow.agents
     : [{
-        id: 'hub',
-        kind: 'hub',
-        role: workflow.hub?.role || 'orchestrator',
+        id: 'planner',
+        kind: 'planner',
+        role: workflow.hub?.role || 'planner',
         tools: workflow.tools || [],
       }];
 }
@@ -49,16 +49,7 @@ export function deriveBranchCandidates(workflow: WorkflowSpec): BranchCandidate[
   };
 
   for (const agent of agentsOf(workflow)) {
-    if (agent.kind === 'tool') {
-      add({
-        kind: 'tool',
-        label: `After ${agent.id}`,
-        nodeId: agent.id,
-        anchor: { kind: 'after_tool', agent_id: agent.id, tool_id: agent.id },
-        recommendedGate: 'entropy_delta',
-      });
-      continue;
-    }
+    if (agent.kind === 'tool') continue;
     if (agent.kind === 'verifier' || agent.id === 'verifier' || agent.role === 'verifier') {
       add({
         kind: 'verifier',
@@ -73,15 +64,6 @@ export function deriveBranchCandidates(workflow: WorkflowSpec): BranchCandidate[
         label: `After ${agent.id} turn`,
         nodeId: agent.id,
         anchor: { kind: 'after_agent_turn', agent_id: agent.id },
-        recommendedGate: 'entropy_delta',
-      });
-    }
-    for (const tool of agent.tools || (agent.id === 'hub' ? workflow.tools : [])) {
-      add({
-        kind: 'tool',
-        label: `After ${tool}`,
-        nodeId: tool,
-        anchor: { kind: 'after_tool', agent_id: agent.id, tool_id: tool },
         recommendedGate: 'entropy_delta',
       });
     }

@@ -1,6 +1,6 @@
 # Science Studio 使用手册
 
-日期：2026-09-29
+日期：2026-09-30
 
 本手册面向使用者，覆盖 **Science Studio**（`webui/` + `science_infra/control/`）的界面、参数，以及「跑一个典型例子：ARPO 训练」的操作步骤。界面和命令行读写同一份五层 YAML。
 
@@ -65,7 +65,7 @@ cd webui && npm install && npm run build && cd ..
 | npm | 构建 `webui/dist` | `run.sh ui` 报「启动 UI 需要 npm」 |
 | `.env` API 配置 | `OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL`（live Collect 用） | Collect (live) 失败 |
 | GPU + nvidia-smi | 仅训练需要 | Train 被拒；`./run.sh train` 报错 |
-| `data/*.parquet` | `mas/scripts/prepare_data.sh` 生成 | 训练报「缺少 parquet」 |
+| `data/*.parquet` 与 `resources/datasets.yaml` | parquet 由 `mas/scripts/prepare_data.sh` 生成。目录里的 HIVE JSON 登记后也可选作训练、验证或测试集 | 训练报「缺少 parquet」；测试对话框里看不到未登记的文件 |
 | 本地模型 | `LLM/Qwen3-4B`（local LLM 与 RL 训练的 `model_path`） | local 模式 / 训练失败 |
 
 ### 1.3 最小验证路径
@@ -98,6 +98,10 @@ nohup python3 scripts/ui_public_forwarder.py --listen 6006 --target 127.0.0.1:87
 
 Science Studio 有两个入口：首页「实验」（`#/experiments`），以及独立页「模型与数据」（`#/resources/models`、`#/resources/datasets`）。打开一个实验后进入 MAS 工作区。顶栏放实验级操作，菜单在七个工作区之间切换。LLM、RL、Harness 是画布上的设置区，和 MAS 共用同一份未保存草稿。
 
+![实验首页](images/home.png)
+
+![数据集](images/datasets.png)
+
 ```mermaid
 flowchart LR
   home[实验首页] --> resources[模型与数据]
@@ -107,6 +111,7 @@ flowchart LR
     name[实验名]
     gpu[GPU]
     save[保存实验]
+    test[测试]
     train[开始训练 / 查看训练]
   end
   subgraph menu [工作区菜单]
@@ -124,6 +129,7 @@ flowchart LR
 | 实验名 | 当前实验。换实验会丢弃未保存草稿，用磁盘上的五份 YAML 覆盖 |
 | GPU | 勾选训练占用的卡。保存时写入 `rl.devices.ids`，并同步 `trainer.n_gpus_per_node` |
 | 保存实验 | 把 Experiment、LLM、MAS、RL、Harness 的草稿一并写入五份 YAML |
+| 测试 | 从「模型与数据」里选一份已登记的数据集做推理。不调用 `/api/rl/train`。开始后进入和训练相同的控制台，日志按跳打印 `src -> dst` |
 | 开始训练 | 尚无活动训练时显示。确认后停止本地 vLLM，再 `POST /api/rl/train` |
 | 查看训练 | 已有活动训练时替换「开始训练」，进入训练控制台 |
 | 模型与数据 | 打开资源页，绑定推理模型和数据集 |
@@ -134,7 +140,7 @@ flowchart LR
 这些字段仍在 YAML 里，只是不再做成顶栏摘要：
 
 - **入口**：`workflow.entry_agent`，在 MAS 上设采集入口。
-- **可训**：`agents[].trainable=true`，在节点上显示「参与训练」。
+- **可训**：planner、verifier、blank 可以勾「参与训练」。tool-agent 强制不可训练。
 - **GPU**：`rl.devices.ids`，即 `CUDA_VISIBLE_DEVICES`。
 - **n**：每题采样条数，GRPO 组大小，对应 `rollout.n`。
 - **runners**：并行采集进程数 `n_runners`，在 RL 设置里。
@@ -155,7 +161,11 @@ flowchart LR
 
 ### 2.3 训练进行时
 
-顶栏按钮变成「查看训练」。控制台里是这一次 run 的状态和 stdout，可以 Stop，训练中 LightningStore 存活时可以打开 AGL Metrics。Monitor 的日志区绑定同一个 run：切换 run 会清空上一份，再订阅新的 SSE。实验级 reward 曲线不跟着这次切换清空。
+顶栏按钮变成「查看训练」。控制台里是这一次 run 的状态和 stdout，可以停止训练；训练中 LightningStore 存活时可以打开 AGL Metrics。已完成的 run 不再显示停止。Monitor 的日志区绑定同一个 run：切换 run 会清空上一份，再订阅新的 SSE。实验级 reward 曲线不跟着这次切换清空。
+
+![训练控制台](images/console.png)
+
+控制台标题行给出状态、算法、GPU、Runner 和 `n`。搜索只覆盖当前窗口，更早的行用「下载完整日志」。顶栏「测试」打开的是同一个窗口，但没有「停止训练」「采样结果」「本次配置」。
 
 ### 2.4 切菜单不丢草稿
 
@@ -186,7 +196,7 @@ science-infra collect --mock --n 2 --out /tmp/traj.json
 science-infra diagnose /tmp/traj.json
 ```
 
-Collect 会走编译后的多 Agent 图。开始训练后的热路径仍是单 hub TirAgent，加上 workflow 里声明的分支采样。
+Collect 会走编译后的中心化图（planner → router → pool → verifier）。开始训练后的热路径仍是单 hub TirAgent，加上 workflow 里声明的分支采样。顶栏「测试」是另一次推理，不走训练。
 
 ### 3.2 Experiment 页
 
@@ -243,99 +253,85 @@ Collect 会走编译后的多 Agent 图。开始训练后的热路径仍是单 h
 
 ### 3.4 MAS 页
 
-MAS 页是核心编辑区，从上到下分三块：**主画布**（React Flow 图编辑器）、**Rollout Sampling 小窗**（分支采样声明）、**live-api-data 采集卡**。
+MAS 页是核心编辑区：主画布、采样设置、以及顶栏的「测试」。中心化模板画出来是 planner、router、tool-agent pool、verifier。
 
-#### 3.4.1 主画布（MasGraphEditor）
+下图把 verifier 从和 router 重叠的位置拉开，并临时把采样模式改成 ARPO，方便看清四个节点。浏览器显示未保存，实验文件没有写入。
 
-**添加节点（W2 统一 Agent palette，2026-09-20 起）**：左侧「添加」区把过去按角色拆分的多个 Agent 分类合并为**单一 Agent 分类**，按钮直接由后端 `GET /api/mas/palette` 的 `agent_templates` 渲染（6 种模板），Tool 列表改由 `tool_agents`（后端注册表）渲染：
+![MAS 画布](images/workspace.png)
 
-| 模板按钮 | kind / role | hint | 说明 |
-|------|------|------|------|
-| `+ [tool] Tool Agent` | `tool` | 封装工具为 agent，可开 LLM 后端 | 工具 Agent 节点（双后端 pure/epc_aw llm） |
-| `+ [blank] 空白 Agent` | `blank` | 自定义 profile 多专家 | 只带 profile（system_prompt / skills / memory_scope），经 router 候选 `blank:<id>` 以 tool-call shell 单跳执行（W1） |
-| `+ [verifier] Verifier` | `verifier` | 校验上游产出并反馈 | 自动带 `verifier` skill，连 feedback 边回 hub 成回路 |
-| `+ [planner] Planner` | `planner` | 任务分解与派发 | 默认 `react_loop` skill |
-| `+ [hub] Hub` | `hub` | ReAct 主循环入口 | 默认 `react_loop` skill；可设采集入口 / trainable |
-| `+ [router] Router` | `router` | 多专家路由 | 菱形节点（W5 起独立于 Agent 分类，仍单列） |
+#### 3.4.1 主画布
 
-- 模板缺省时（老后端）自动回退到旧的 `palette.roles` 角色按钮，不破坏兼容。
-- Tool 按钮：从 `tool_agents` 列表渲染（含 `(llm)` 标注 `llm_required` 的后端）。
-- 模板按钮：一键应用「Hub ReAct (executable)」等预置 workflow。
-- **blank agent 用法（W1）**：拖入空白 Agent 模板 → Inspector 填 `system_prompt`、profile skills、`memory_scope` → 在 router 节点候选里选它（编译器同时接受裸 id 与 `blank:` 前缀两种写法，UI 写带前缀形式）。运行时该 agent 以单次 LLM 调用执行（该 agent 自己的 system_prompt + 会话历史 + 输入），window_events 标 `agent_kind=blank`。
+左侧工具箱分四栏：Agent、Tool、Router、模板。
 
-**连线**：从节点输出锚点拖到目标节点。连线前可选 kind：
-
-| kind | 语义 | 合法方向 |
-|------|------|---------|
-| `message` | 消息传递 | Agent ↔ Agent |
-| `route` | 路由（目标只能有一条入 route） | Agent → Agent |
-| `feedback` | 反馈回路（如 verifier→hub） | Agent → Agent |
-| `tool_call` | 工具调用 | Agent → Tool（连到 Tool 时自动设为 tool_call） |
-| `sample_barrier` | 声明「允许在此屏障 fork」（不做 UI beam） | 边语义 |
-
-非法边（如 Agent↔Agent 的 `tool_call`）保存后 Collect 会返回 400，画布上会显示 `not executable: <原因>` chip。
-
-**采集入口 pin**：把「采集入口」按钮拖到某个 Agent 上，表示 Episode 从该节点开始（`workflow.entry_agent`）。也可以在节点属性里点「设为采集入口」。
-
-**节点属性 Inspector**（点选节点后右侧卡片）：
-
-| 字段 | 说明 |
+| 栏 | 放上画布之后 |
 |------|------|
-| role | agent 角色 |
-| system prompt (profile) | 系统提示词 |
-| skills | 逗号分隔，如 `react_loop`、`verifier` |
-| tools | 复选框勾选该 agent 可用的工具 |
-| 参与 RL（trainable） | 是否可训练 → 训练 `--active-agent` |
-| 设为采集入口 | 等价拖 pin |
-| verify skill（仅 hub） | 选 verifier skill 开启校验回路（空=关闭） |
+| Agent | planner、verifier，或自定义 blank。可以参与训练 |
+| Tool | 不新建节点。点名字是把这个 tool-agent 加入当前 router 的 pool |
+| Router | 新建一个 router，并自动带出一个空的 pool |
+| 模板 | 用整张工作流替换画布。中心化、双 router、空白专家等都在这里 |
 
-**训练简参**（入口节点的 details 折叠区）：每题采样条数（GRPO 组大小）、n_runners——直接写 `rl.yaml`，**不要**画成图节点。
+tool-agent 不可训练，也不单独占节点。点 pool 可以增加或删除成员。每个成员有级别：`lite` 用现在的 HTTP kernel，`pro` 再做选页和落地页摘录。缺省 lite，写入该 agent 的 `profile.tier`。`google_search` 的检索页是 Bing / DuckDuckGo，不是 Google 网页。
 
-#### 3.4.2 Rollout Sampling 小窗（重点）
+![pool 的 lite / pro](images/pool-tier.png)
 
-主画布下方的轨迹条 + 迷你 Inspector，是声明 **分支采样策略**（`workflow.yaml` 的 `sampling`）的主交互。
+hub 和 executor 不再是可以拖进来的 Agent。`workflow.hub` 仍保留 verify 和反馈轮数。
 
-**顶栏三个旋钮**：
+**连线**：planner → router 是 `route`，router 在画布上先连到 pool，pool 再连到 verifier。保存时 pool 折叠掉，磁盘上是 router → verifier 的 `message`，以及 verifier → planner 的 `feedback`。每个 router 有自己的 pool。
+
+**节点属性**：planner / verifier / blank 可以改模型、系统提示词和是否参与训练。pool 的属性是成员列表和每个成员的 lite / pro。
+
+#### 3.4.2 采样点
+
+采样模式、`group_n`、`beam_size` 仍在 MAS 设置里。可选位置只有：
+
+- 每个非 tool agent 结束之后。planner 和 blank 的锚点是 `after_agent_turn`，verifier 是 `after_verifier`。
+- 每个 router 结束之后，锚点也是 `after_agent_turn`，文案是「路由结束后」。
+
+不按 tool 展开。站点默认关闭，打开后才写入 `sampling.sites`。画布上采样点挂在该节点的下一条 route、message 或 feedback 边上。中心化模板里，planner 的点在 planner → router 上。
+
+![采样边](images/sampling-edge.png)
+
+采样设置仍在 MAS 页：
 
 | 旋钮 | 写入 | 含义 |
 |------|------|------|
 | mode | `sampling.mode` | `grpo_n` / `arpo` / `aepo` / `appo` / `rae` |
-| group_n | `sampling.group_n` | 每题最终凑满的完整轨迹条数（GRPO 组大小） |
-| beam_size | `sampling.beam_size` | 从一个中间 snapshot 最多再开几条 branch（详见 [ROLLOUT_SAMPLING.md](./ROLLOUT_SAMPLING.md) §5） |
+| group_n | `sampling.group_n` | 每题最终凑满的完整轨迹条数 |
+| beam_size | `sampling.beam_size` | 从一个中间 snapshot 最多再开几条 branch |
 
-**轨迹条**：横向展示简化轨迹 `start → agent… → verify → end`。点击某个 agent 屏障节点后，下方出现该站点的配置行：
+打开一个候选后，可以设：
 
 | 控件 | 写入 | 说明 |
 |------|------|------|
-| 启用 branch | `sites[].enabled` | 该屏障点允许 fork |
-| gate | `sites[].gate.type` | 9 种：`entropy_delta`（推荐）/ `dual_entropy` / `always` / `tool_ok` / `tool_error` / `verifier_pass` / `verifier_fail` / `contradiction` / `failure_trigger` |
-| reward | `sites[].reward.scheme` | `scalar_grpo`（R0）或 `rae_adjudicate`（R1，RAE 裁决） |
-| beam | `sites[].fork.beam_size` | 该站点分支数（默认 2） |
+| 启用 | `sites[].enabled` | 该点允许 fork |
+| gate | `sites[].gate.type` | `entropy_delta`、`dual_entropy`、`always`、`tool_ok`、`tool_error`、`verifier_pass`、`verifier_fail`、`contradiction`、`failure_trigger` |
+| reward | `sites[].reward.scheme` | `scalar_grpo` 或 `rae_adjudicate` |
+| beam | `sites[].fork.beam_size` | 该站点分支数，默认 2 |
 
-**采样选点（anchor）与触发时机**：站点的 `anchor.kind` 支持 `after_tool`（工具调用后，需选 tool_id）/ `after_agent_turn`（agent 轮次后）/ `after_verifier`（verifier 裁决后）/ `on_token`（token 级，Advanced）/ `after_edge`（指定边后，需 edge_id）；`when` 支持 `first`（首个匹配）/ `nth`（第 nth 次，配合 `nth` 参数）/ `all`（每次匹配都采样）。这 5×3 组合均经 API 持久化回归验证（2026-09-19）。
+`anchor.kind` 里 `after_tool`、`on_token`、`after_edge` 仍能被旧 YAML 读入。2026-09-19 的 5×3 持久化回归覆盖的是当时的小窗。当前画布不再把 tool 列成候选，也不再提供「展开 tool 屏障」。
 
-勾「展开 tool 屏障」可把 tool 边界（如 `after execute_python`）也列为可点站点。
+#### 3.4.3 测试 MAS
 
-保存后这些写入 `workflow.yaml` 的 `sampling.sites`，画布上对应节点出现 `branch:<gate>` 角标（蓝色边框）。
+顶栏「测试」打开对话框。数据集来自「模型与数据」，可以是 parquet，也可以是已登记的 HIVE JSON。选择条数后点「开始测试」。
 
-**Branch Rollout 站点（Advanced）**：节点属性卡下方的折叠区，列出全部候选站点（含 `on_token` token 级候选、`on_edge` barrier 边候选），并可设 `fork.resume_mode`：
+![测试 MAS](images/mas-test.png)
 
-- `messages`（默认）：从对话消息前缀续写
-- `token_prefix`（Advanced）：token 前缀续写；**注意**训练侧无 token 引擎时会降级 messages 并打 `resume_mode_downgraded`，属已知合同行为
+开始后进入和训练相同的控制台，但不会出现停止训练。日志里每一跳一行：`planner -> route_exec plan_step`、`wikipedia_search -> verifier tool_result` 这种形式。`tool_result` 带 `tier`。这次运行不调用训练接口。
 
-#### 3.4.3 采集不在画布按钮上
+点「开始测试」后才会检查模型是否能推理。上面这张图是对话框本身。截图时本机 8000 没有模型服务，所以没有进入测试控制台。
 
-界面里没有 Collect (mock) / Collect (live) 按钮。采集走命令行，产物仍是 `experiments/<id>/artifacts/collect.json`，Monitor 的 Collect 曲线和 Harness 诊断读这份文件。
+#### 3.4.4 采集不在画布按钮上
+
+界面里没有 Collect 按钮。采集走命令行，产物仍是 `experiments/<id>/artifacts/collect.json`。
 
 ```bash
 science-infra collect --mock --n 2 --out /tmp/traj.json
-# live 需要 .env 里的 OPENAI_API_KEY / OPENAI_API_BASE / OPENAI_MODEL
 ./run.sh live-api-data
 ```
 
-Collect 走编译后的多 Agent 图，用来检查 workflow 能否执行。它不产生训练分支树。真 branch 只在训练 Daemon（`tir_algo` 为 arpo、aepo 或 rae）里出现。
+中心化拓扑的 Collect 走编译后的 planner → router → pool → verifier。它不产生训练分支树。真 branch 只在训练 Daemon（`tir_algo` 为 arpo、aepo 或 rae）里出现。
 
-从 parquet 抽题的字段仍是：`parquet` 默认 `data/val.parquet`，`data_n` 默认 5，`source` 默认 `gsm8k`。结果表列 group / idx / id / answer / reward / branch / tool。
+从 parquet 抽题的字段仍是：`parquet` 默认 `data/val.parquet`，`data_n` 默认 5，`source` 默认 `gsm8k`。顶栏「测试」另选目录里已登记的数据集，不写这份 collect.json。
 
 ### 3.5 RL 页
 
@@ -378,6 +374,14 @@ Collect 走编译后的多 Agent 图，用来检查 workflow 能否执行。它�
 
 **入口**：工作区菜单 **Runs**。一条训练记录上的「采样结果」打开 `#/experiments/<id>/runs/<runId>/samples`。训练控制台里也有同一入口。页面只读。
 
+![训练记录](images/runs.png)
+
+「本次配置」是这一次启动时的快照，凭据已脱敏，不是实验当前草稿。
+
+![采样结果](images/samples.png)
+
+上图是 `arpo_e2e` 已完成 run `b5baacb767c2` 的执行树。节点名是 `hub` 和 `execute_python`，因为训练热路径仍是单 hub TirAgent；续写边对应那次记录里的 `after_tool` 站点。当前画布上的 planner / router 站点还没有新的训练树。
+
 **功能**：可视化每条 query 的 rollout 树。
 
 **数据源（2026-09-20 起）**：`GET /api/mas/rollout-trees` 双源合并——
@@ -413,6 +417,10 @@ Collect 走编译后的多 Agent 图，用来检查 workflow 能否执行。它�
 ### 3.8 Monitor 页
 
 **功能**：实验观测。曲线按实验聚合；日志按当前 run 订阅。
+
+![Monitor](images/monitor.png)
+
+没有活动训练时，日志区是空的，曲线仍按实验保留。某一次 run 的 stdout 到「查看训练」或 Runs 的「查看日志」里看。
 
 **统计 chip 行**：`collect n` / `collect mean` / `sampling mode` / `group_n` / `train pts` / `errors`。
 
@@ -551,21 +559,23 @@ cd mas && TRAIN_LIMIT=32 VAL_LIMIT=8 bash scripts/prepare_data.sh
 ./run.sh ui --daemon        # 后台；日志 artifacts/run_smoke/ui.log
 ```
 
-浏览器打开 `http://127.0.0.1:8787/`。首页选实验 **`arpo_e2e`** 进入工作区。在 MAS 上确认采集入口是 hub，hub 节点显示「参与训练」。
+浏览器打开 `http://127.0.0.1:8787/`。首页选实验 **`arpo_e2e`** 进入工作区。在 MAS 上确认入口是 planner，planner 可以勾「参与训练」。tool-agent 在 pool 里，不可训练。
 
 ### 5.4 第三步：LLM 页
 
 - Collect 验证用：模式选 `api`，填 `model=qwen3.5-27b`、`base_url=https://www.dmxapi.cn/v1/`、API Key → 「探测连接」ok 后「保存 llm.yaml」。
 - 训练本身用本地权重（RL 页 `model_path`），不受此页影响；**训练启动会自动停掉本地 vLLM**，无需手动处理 `local` 模式。
 
-### 5.5 第四步：MAS 页声明分支采样（Rollout Sampling 小窗）
+### 5.5 第四步：MAS 页声明分支采样
 
-1. 小窗顶栏：**mode=`arpo`**、**group_n=`4`**、**beam_size=`2`**。
-2. 轨迹条点选 `hub` agent 屏障 → 勾「启用 branch」，gate 保持 **`entropy_delta`**。
-3. 勾选「展开 tool 屏障」→ 点 `execute_python` → 同样启用 branch（gate `entropy_delta`）。这样形成双 site：`after_agent_turn` + `after_tool`。
-4. 「保存 workflow.yaml」。
+1. 采样设置：**mode=`arpo`**、**group_n=`4`**、**beam_size=`2`**。
+2. 打开 planner 结束后的采样点（planner → router 这条边上，锚点 `after_agent_turn`），gate 用 **`entropy_delta`**。
+3. 再打开 router 结束后的采样点，同样启用。不要按 tool 展开。
+4. 顶栏「保存实验」。
 
-保存后磁盘 `experiments/arpo_e2e/workflow.yaml` 应包含（节选）：
+当前画布保存后，`sampling.sites` 的 `agent_id` 是 planner 或 router 的 id，锚点是 `after_agent_turn`（verifier 则是 `after_verifier`）。
+
+下面这段是 **2026-09-20** 当时写进 `experiments/arpo_e2e/workflow.yaml` 的记录，入口还是 hub，并展开了 tool 屏障。它对应后面的 run `384d1927458a`，不是现在的操作步骤：
 
 ```yaml
 sampling:
@@ -584,8 +594,6 @@ sampling:
     gate: { type: entropy_delta }
 ```
 
-画布上 hub 节点出现 `branch:entropy_delta` 角标即声明成功。
-
 ### 5.6 第五步：RL 页设训练参数
 
 1. **algo=`arpo`**（下拉）。
@@ -603,7 +611,7 @@ sampling:
 science-infra collect --mock --n 2 --out /tmp/traj.json
 ```
 
-预期：轨迹里能看到工具调用和答案；`experiments/arpo_e2e/artifacts/collect.json` 可以随后由诊断或 Monitor 读取；**没有** expansion / `branch_local_count`。Collect 走编译后的多 Agent 图，不做训练分支。
+预期：轨迹里能看到工具调用和答案；`experiments/arpo_e2e/artifacts/collect.json` 可以随后由诊断或 Monitor 读取；**没有** expansion / `branch_local_count`。中心化 Collect 走 planner → router → pool → verifier，不做训练分支。
 
 想验真实链路再用 `./run.sh live-api-data`（默认 `data/val.parquet`，gsm8k）。
 

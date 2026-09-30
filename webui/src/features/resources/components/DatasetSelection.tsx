@@ -11,11 +11,15 @@ export const DatasetSelection = memo(function DatasetSelection({ active, onManag
   const catalog = usePollingResource('training-datasets', datasetResourcesApi.list, undefined, active);
   const { draft } = useTrainingConfig();
   return <>
-    {(['train_files', 'val_files'] as const).map((key, index) => {
+    {([
+      ['train_files', '训练集', '选择训练集'],
+      ['val_files', '验证集', '选择验证集'],
+      ['test_files', '测试集', '选择测试集'],
+    ] as const).map(([key, label, aria]) => {
       const current = draft.rl.data?.[key];
       const value = typeof current === 'string' ? current : '';
-      return <FormField key={key} label={index === 0 ? '训练集' : '验证集'}>
-        <Select value={value} aria-label={index === 0 ? '选择训练集' : '选择验证集'} onChange={event => {
+      return <FormField key={key} label={label}>
+        <Select value={value} aria-label={aria} onChange={event => {
           const next = event.target.value;
           if (next === '__manage__') { onManage(); return; }
           draft.patch(rl => ({ ...rl, data: { ...rl.data, [key]: next } }));

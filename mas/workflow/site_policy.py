@@ -29,8 +29,6 @@ def site_capability(
     selector = selector_from_anchor(site.anchor)
     opportunity = opportunities.get(selector_key(selector))
     if opportunity is None:
-        if str(site.anchor.kind) == "after_agent_turn":
-            return "warning", "旧 Agent Site 不属于当前策略的原生 Window；请迁移到明确的 Tool Result Site。"
         return "error", f"当前策略 {strategy} 不支持此采样窗口。"
     if site.fork.resume_mode != "messages":
         return "error", "当前执行器仅支持 messages Snapshot 续跑。"
@@ -43,20 +41,29 @@ def site_capability(
     return "pass", opportunity.message
 
 
-def _edge_id(spec: MASSpec, owner: str | None, tool_id: str | None) -> str | None:
-    if not owner or not tool_id:
+_ANCHOR_KIND = {
+    "tool_result": "after_tool",
+    "agent_complete": "after_agent_turn",
+    "verification_complete": "after_verifier",
+    "router_decision": "after_agent_turn",
+    "edge": "on_edge",
+    "token": "on_token",
+}
+
+
+def _outgoing_edge(spec: MASSpec, owner: str | None):
+    """First route, message, or feedback edge leaving this agent or router."""
+    if not owner:
         return None
-    for index, edge in enumerate(spec.edges):
-        if edge.source == owner and edge.target == tool_id and edge.kind == "tool_call":
-            return f"e-{edge.source}-{edge.target}-{index}"
-    return None
-
-
-def _canvas_node_id(selector) -> str:
-    runtime_id = str(
-        selector.interaction.get("tool_id") or selector.owner_agent_id or ""
-    )
-    return runtime_id.removeprefix("blank:")
+    matches = [
+        (index, edge)
+        for index, edge in enumerate(spec.edges)
+        if edge.source == owner and edge.kind in ("route", "message", "feedback")
+    ]
+    concrete = [item for item in matches if not str(item[1].target).startswith("pool_")]
+    if concrete:
+        return concrete[0]
+    return matches[0] if matches else None
 
 
 def sampling_preview(workflow: dict[str, Any]) -> dict[str, Any]:
@@ -72,25 +79,28 @@ def sampling_preview(workflow: dict[str, Any]) -> dict[str, Any]:
         selector = opportunity.selector
         tool_id = selector.interaction.get("tool_id")
         site = configured.get(key)
+        owner = selector.owner_agent_id
+        outgoing = _outgoing_edge(spec, owner)
+        edge_target = outgoing[1].target if outgoing else owner
+        edge_id = (
+            f"e-{outgoing[1].source}-{outgoing[1].target}-{outgoing[0]}"
+            if outgoing else None
+        )
         opportunities.append(
             {
                 "id": key,
-                "node_id": _canvas_node_id(selector),
-                "edge_id": _edge_id(spec, selector.owner_agent_id, str(tool_id or "")),
-                "edge_source": selector.owner_agent_id,
-                "edge_target": _canvas_node_id(selector),
+                "node_id": owner,
+                "edge_id": edge_id,
+                "edge_source": owner,
+                "edge_target": edge_target,
                 "selector": selector.model_dump(mode="json"),
                 "anchor": {
-                    "kind": "after_tool" if selector.kind.value == "tool_result" else selector.kind.value,
-                    "agent_id": selector.owner_agent_id,
+                    "kind": _ANCHOR_KIND.get(selector.kind.value, selector.kind.value),
+                    "agent_id": owner,
                     "tool_id": tool_id,
                     "edge_id": selector.interaction.get("edge_id"),
                 },
-                "label": (
-                    f"{tool_id} 结果返回 {selector.owner_agent_id} 后"
-                    if tool_id
-                    else f"{selector.owner_agent_id} 窗口结束后"
-                ),
+                "label": opportunity.message or f"{owner} 窗口结束后",
                 "support": opportunity.support,
                 "message": opportunity.message,
                 "runtime_event": selector.kind.value,

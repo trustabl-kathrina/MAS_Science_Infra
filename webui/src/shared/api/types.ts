@@ -1,7 +1,7 @@
 export type Config = Record<string, unknown>;
 
-export type AgentKind = 'hub' | 'planner' | 'tool' | 'verifier' | 'blank';
-export type RouterStrategy = 'llm_choice' | 'score' | 'round_robin';
+export type AgentKind = 'planner' | 'tool' | 'verifier' | 'blank';
+export type RouterStrategy = 'from_plan' | 'llm_choice' | 'score' | 'round_robin';
 
 export interface AgentSpec extends Config {
   id: string;
@@ -179,6 +179,7 @@ export interface RlConfig extends Config {
   data?: Config & {
     train_files?: string;
     val_files?: string;
+    test_files?: string;
     train_batch_size?: number;
     val_batch_size?: number | null;
     max_prompt_length?: number;
@@ -295,6 +296,23 @@ export interface GpuResponse {
   error?: string;
 }
 
+export interface LlmOption {
+  id: string;
+  name: string;
+  source: 'local' | 'api';
+  path?: string;
+  model_type?: string | null;
+  architectures?: string[];
+  served?: boolean;
+}
+export interface LlmOptionsResponse {
+  kind: string;
+  items: LlmOption[];
+  local_root?: string;
+  serving?: { base_url: string; models: string[] } | null;
+  probe?: HealthResponse;
+  message?: string | null;
+}
 export interface HealthResponse {
   ok: boolean;
   status: 'reachable' | 'authentication_failed' | 'rate_limited' | 'unsupported' | 'network_error'

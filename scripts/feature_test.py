@@ -50,7 +50,7 @@ TESTS = TIR / "tests"
 # 功能域 → (测试模块前缀列表, 中文说明)
 FEATURES: dict[str, tuple[list[str], str]] = {
     "mas-core": (
-        ["test_stage1_mas", "test_stage5_mas_sockets"],
+        ["test_stage1_mas", "test_stage5_mas_sockets", "test_spec", "test_compiler"],
         "MAS 基础层: spec/compiler/依赖红线/奖励/mock 采集/memory sockets/runner 注入",
     ),
     "rl": (["test_stage2_rl"], "RL overlay: TrainSignal/Archive resume 边界"),
@@ -61,7 +61,19 @@ FEATURES: dict[str, tuple[list[str], str]] = {
     ),
     "rollout-tree": (["test_rollout_tree"], "RolloutTree 契约: 建树/leaves/path/JSON round-trip"),
     "agent-framework": (["test_agent_framework"], "agent 化: AgentRegistry 双后端/RouterSpec/两层 memory/PEV per-agent events"),
-    "schema03": (["test_schema03_tool_agents"], "schema 0.3: sugar 扩展/kind 推断/ToolAgentInvoker"),
+    "schema03": (
+        [
+            "test_schema03_tool_agents",
+            "test_protocol",
+            "test_router",
+            "test_runtime_dispatch",
+            "test_tool_agents",
+            "test_centralized_integration",
+            "test_palette_contract",
+            "test_template_combinations",
+        ],
+        "schema 0.3: sugar/协议/router fan-out/HIVE tool-agent/中心化循环/palette 契约/模板组合 episode",
+    ),
     "daemon": (["test_daemon_expand"], "Daemon: expansion enqueue/_rollout_trees 存储"),
     "realtime": (["test_realtime_harness"], "实时 Harness: stdout JSONL 帧/SSE 过滤/Diagnoser.consume"),
     "cli": (["test_stage4_cli"], "CLI: status HTML/子进程闭环"),
